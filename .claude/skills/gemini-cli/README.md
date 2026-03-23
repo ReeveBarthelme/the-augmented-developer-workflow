@@ -15,14 +15,11 @@ This skill teaches Claude Code how to wield Gemini CLI for:
 
 ## Installation
 
-Copy the skill directory to your Claude Code skills folder:
+Originally from [forayconsulting/gemini_cli_skill](https://github.com/forayconsulting/gemini_cli_skill). Adapted for this workflow.
 
 ```bash
-# Clone the repo
-git clone https://github.com/forayconsulting/gemini_cli_skill.git
-
-# Copy to Claude Code skills directory
-cp -r gemini_cli_skill ~/.claude/skills/gemini-cli
+# Copy from this repo
+cp -r .claude/skills/gemini-cli ~/.claude/skills/gemini-cli
 ```
 
 Or manually create `~/.claude/skills/gemini-cli/` and copy the files.

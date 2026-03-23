@@ -15,7 +15,7 @@ Enable Claude Code to invoke the Codex CLI (`codex exec` and session resumes) fo
 
 ## Installation
 
-Download this repo and store the skill in ~/.claude/skills/codex
+Originally from [skills-directory/skill-codex](https://github.com/skills-directory/skill-codex). Adapted for this workflow.
 
 ```
 # Copy from this repo

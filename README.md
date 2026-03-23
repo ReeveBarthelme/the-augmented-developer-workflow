@@ -247,6 +247,16 @@ The most common customizations:
 - **Review focus areas** in `pr-review-bot.sh`
 - **Pre-merge targets** in `pre-merge-gate.sh` (default: `make pre-merge`)
 
+## Credits
+
+This pipeline builds on work from several open-source projects:
+
+- **`/vdd`, `/sdd`, `/tdd` commands + agents + critique-standards** — originally from [sherifattia/vdd](https://github.com/sherifattia/vdd) (Verification-Driven Development). Includes the `architecture-critic`, `code-quality-enforcer`, `spec-builder`, `spec-critic` agents and `critique-standards` skill.
+- **gemini-cli** skill — originally from [forayconsulting/gemini_cli_skill](https://github.com/forayconsulting/gemini_cli_skill)
+- **codex** skill — originally from [skills-directory/skill-codex](https://github.com/skills-directory/skill-codex)
+
+The orchestration skills (`orchestrate-investigation`, `orchestrate-review-deploy`), hooks, PR review bot, and the multi-agent pipeline that ties everything together were developed independently.
+
 ## License
 
 MIT
