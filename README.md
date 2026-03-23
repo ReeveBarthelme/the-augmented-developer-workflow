@@ -18,7 +18,7 @@ This isn't a framework — it's a **complete workflow** extracted from real prod
 ├────────────────────────────┼──────────────────────────────────────────────────────────────┼───────────────┤
 │ /vdd plan.md               │ Phase-by-phase implementation with 2 critic agents per phase │ Yes           │
 ├────────────────────────────┼──────────────────────────────────────────────────────────────┼───────────────┤
-│ "verify it works"          │ Tests + /browse + /qa-only, iterate until clean              │ Fixes only    │
+│ "verify it works"          │ Tests + /qa (auto-fix) or /qa-only (report), /browse         │ Fixes only    │
 ├────────────────────────────┼──────────────────────────────────────────────────────────────┼───────────────┤
 │ /orchestrate-review-deploy │ 3-model review, auto-fix loop, commit, deploy staging        │ Fixes only    │
 └────────────────────────────┴──────────────────────────────────────────────────────────────┴───────────────┘
@@ -164,7 +164,10 @@ git clone https://github.com/garrytan/gstack.git
 # Follow gstack's setup instructions for /browse, /qa, /qa-only commands
 ```
 
-This enables the "verify it works" step in the pipeline — automated browser testing after implementation.
+This enables the "verify it works" step in the pipeline:
+- `/qa` — full QA: tests, finds bugs, fixes them, re-verifies in a loop
+- `/qa-only` — report-only: finds bugs but doesn't fix (for review before changes)
+- `/browse` — ad-hoc browser interaction, screenshots, element inspection
 
 ### 3. Multi-Model CLI Tools (Optional)
 
@@ -206,8 +209,8 @@ npm i -g @google/gemini-cli
                     └──────────┬──────────┘
                                │
                     ┌──────────▼──────────┐
-                    │  Verify (tests +    │  /browse + /qa-only
-                    │  browser QA)        │  → iterate until clean
+                    │  Verify (tests +    │  /qa or /qa-only
+                    │  browser QA)        │  + /browse → iterate
                     └──────────┬──────────┘
                                │
                     ┌──────────▼──────────┐
