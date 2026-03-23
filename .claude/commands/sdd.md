@@ -2,7 +2,7 @@ Produce a formal specification through adversarial critique.
 
 ## Prerequisites
 
-- A plan should be approved via `/plan` before formalizing into a spec. `/sdd` takes the approved plan's requirements and produces a formal 5-section specification.
+- A plan should be approved (via `/orchestrate-investigation` or manual planning) before formalizing into a spec. `/sdd` takes the approved plan's requirements and produces a formal 5-section specification.
 - The user must describe a feature and its intent — either as an argument (`/sdd "feature description"`) or through conversation
 - Optionally, an existing spec can be passed for revision: `/sdd --revise path/to/spec.md`. When `--revise` is provided, skip Step 1. In Step 2, spawn the spec-builder with the existing spec file and instruction to preserve structure while reformatting to the canonical format if needed. Then proceed to Step 3.
 

@@ -7,6 +7,7 @@ allowed-tools:
   - Read
   - Grep
   - Glob
+  - AskUserQuestion
 ---
 
 # Multi-Agent Review & Deploy Orchestration
@@ -110,7 +111,9 @@ Run this via the **Bash** tool (NOT the Task tool). Uses **strict mode** — onl
 # Source fallback wrapper: strict mode = auto (Pro) → fallback-pro → FAIL (no flash)
 source .claude/scripts/gemini-with-fallback.sh
 
-gemini_with_fallback_strict "You are performing a security-focused pre-merge review. Reference critique-standards for severity definitions.
+# SECURITY: Write prompt to temp file to prevent bash expansion
+cat <<'GEMINI_SECURITY_PROMPT' > /tmp/gemini-security-review.txt
+You are performing a security-focused pre-merge review. Reference critique-standards for severity definitions.
 
 Review the changes on the current branch. Read changed files directly using file paths from git status.
 
@@ -147,8 +150,10 @@ Issues (if any):
   OWASP category: A01-A10
   Mitigation: specific fix recommendation
 
-If APPROVE: 'APPROVE. No security issues found. OWASP compliance verified.'" \
--o text
+If APPROVE: 'APPROVE. No security issues found. OWASP compliance verified.'
+GEMINI_SECURITY_PROMPT
+
+gemini_with_fallback_strict "$(cat /tmp/gemini-security-review.txt)" -o text
 ```
 
 #### Gemini Unavailable Fallback: Claude Security Subagent

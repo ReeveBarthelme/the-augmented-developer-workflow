@@ -1,0 +1,101 @@
+# CLAUDE.md — [Your Project Name]
+
+<!-- Copy this template into your project root and customize the sections marked with "Customize:" -->
+
+## Quick Start
+
+```bash
+# Customize: your project's startup commands
+# ./dev.sh up -d
+# npm run dev
+# docker compose up -d
+```
+
+**NEVER `git add -A` — ALWAYS add specific files.**
+
+**BEFORE ANY EDITS: Run `git branch --show-current && pwd`. If on `main`, STOP and create a feature branch or worktree first.**
+
+## Code Standards
+
+| Principle | Requirement |
+|-----------|-------------|
+| **TDD** | Write tests BEFORE implementation |
+| **DRY** | 3+ identical blocks → extract to function |
+| **Types** | Annotations required, proper None handling |
+| **Files** | <500 lines per file |
+| **Security** | No secrets in logs, no secrets in code |
+
+## Workflow Discipline
+
+| Phase | Gate | Action |
+|-------|------|--------|
+| **Feature Design** | Assumptions explicit | List assumptions → read specs for blocking ones → verify before designing |
+| **Bug Fix** | Reproduce first | 5-Whys → logging → "$100 bet on root cause?" |
+| **Post-Deploy** | Wait 60s | Run EXACT repro steps → confirm symptom gone → user confirms |
+| **Local Dev** | Prove it works | tests → curl → `/qa` (or `--quick`) → health score clean → THEN hand off |
+| **Multi-Agent** | All agents done | Synthesize → address dissent → unanimous before deploy |
+| **Session Scope** | One objective | Investigation OR Implementation OR Deploy (not all) |
+
+**Session types**: Investigation (plan, no code) · Implementation (code+tests, no deploy) · Deployment (verify, no new code)
+
+### Investigation Phase — Use `/orchestrate-investigation` (NOT `/plan`)
+
+**`/orchestrate-investigation` is the entry point for all non-trivial tasks.** Do NOT use `/plan` — it blocks the Bash and Task tools needed to spawn Gemini/Codex agents.
+
+### VDD Pipeline (scale to task size)
+
+| Task Size | Workflow |
+|-----------|----------|
+| **Significant feature** | `/orchestrate-investigation` → `/sdd` → `/tdd --test-only` → `/vdd` → **verify** → `/orchestrate-review-deploy` |
+| **Medium feature** | `/orchestrate-investigation` → `/vdd` → **verify** → `/orchestrate-review-deploy` |
+| **Small fix** | `/orchestrate-investigation` → implement → **verify** → `/orchestrate-review-deploy` |
+| **Trivial fix** | Fix → **verify** → `/orchestrate-review-deploy` |
+
+**Verify step** (after implementation, before review):
+1. Run tests for affected modules
+2. `curl` affected API endpoints
+3. `/qa --quick` for small changes, `/qa` (full) for significant features
+4. Health score must be clean before sending to reviewers
+
+## Local Dev Verification (MANDATORY)
+
+**Never hand off to the user without proving it works.** Layered verification:
+
+1. **Tests**: Run test suite for affected modules (catches logic regressions)
+2. **API smoke**: `curl` every affected endpoint — fix until clean
+3. **QA pass**: Run `/qa --quick` for small changes, `/qa` for significant features
+4. **Ad-hoc exploration**: Use `/browse` for targeted page checks and screenshots
+
+## Essential Commands
+
+<!-- Customize: fill in your project's commands -->
+
+| Task | Command |
+|------|---------|
+| Local dev | `# your local dev command` |
+| Run tests | `# your test command` |
+| Deploy staging | `# your staging deploy command` |
+| Deploy production | `# your production deploy command` |
+| View logs | `# your log command` |
+
+## Security
+
+- Never commit `.env` files
+- **Required local tools** (install before first merge):
+  ```bash
+  brew install gitleaks jq
+  # Customize: add your language-specific security tools
+  # pip install pip-audit "bandit[toml]"  # Python
+  # npm audit                              # Node.js
+  ```
+- **Escape hatch**: `SKIP_SECURITY=true make pre-merge` bypasses security scans during rapid iteration
+
+## Module-Specific Context
+
+<!-- Customize: add CLAUDE.md files per module for large projects -->
+
+| Module | CLAUDE.md | Purpose |
+|--------|-----------|---------|
+| **Backend** | `backend/CLAUDE.md` | API, auth, data layer |
+| **Frontend** | `frontend/CLAUDE.md` | UI components, state |
+| **Shared** | `shared/CLAUDE.md` | Common utilities |

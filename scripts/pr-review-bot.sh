@@ -210,7 +210,9 @@ run_gemini_review() {
   if [[ -f .env ]]; then set -a; source .env 2>/dev/null || true; set +a; fi
   local prompt
   prompt="$(build_review_prompt "Gemini (Security)" "$GEMINI_FOCUS")"
-  run_with_timeout gemini "$prompt" -m gemini-2.5-pro -o text \
+  # Use env var for model selection; defaults to 'auto' (routes to best available)
+  local model="${GEMINI_REVIEW_MODEL:-auto}"
+  run_with_timeout gemini "$prompt" -m "$model" -o text \
     > "$WORK/review-gemini.txt" 2>/dev/null || {
     log "  Gemini review failed or timed out (exit $?)"
     return 0
@@ -425,11 +427,10 @@ post_review() {
     fi
   fi
 
-  # Final fallback: plain comment
+  # Final fallback: plain comment (use --body-file to avoid shell expansion)
   log "Falling back to plain comment..."
-  local body
-  body=$(jq -r .body "$WORK/review-payload.json")
-  if gh pr comment "$PR_NUM" --body "$body" > /dev/null 2>&1; then
+  jq -r .body "$WORK/review-payload.json" > "$WORK/fallback-body.txt"
+  if gh pr comment "$PR_NUM" --body-file "$WORK/fallback-body.txt" > /dev/null 2>&1; then
     log "Comment posted as fallback."
   else
     log "ERROR: Could not post review or comment"

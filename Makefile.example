@@ -1,0 +1,37 @@
+# Makefile.example — Example pre-merge target for the pre-merge-gate hook
+#
+# The pre-merge-gate.sh hook runs `make pre-merge` before allowing `gh pr merge`.
+# Copy this to your project's Makefile and customize the targets.
+
+.PHONY: pre-merge lint test security
+
+# The gate the hook calls — must pass before merge is allowed
+pre-merge: lint test security
+	@echo "All pre-merge checks passed."
+
+# Customize: your linting commands
+lint:
+	@echo "Running linters..."
+	# Python: ruff check . && ruff format --check .
+	# TypeScript: npx eslint . && npx tsc --noEmit
+	# Go: golangci-lint run ./...
+
+# Customize: your test commands
+test:
+	@echo "Running tests..."
+	# Python: python3 -m pytest tests/ -v
+	# TypeScript: npm test
+	# Go: go test ./...
+
+# Customize: your security scanning
+security:
+	@echo "Running security checks..."
+	# gitleaks detect --source . --no-banner
+	# Python: pip-audit && bandit -r src/
+	# Node: npm audit --audit-level=high
+	# SKIP_SECURITY=true make pre-merge  (escape hatch for rapid iteration)
+ifdef SKIP_SECURITY
+	@echo "Security checks SKIPPED (SKIP_SECURITY=$(SKIP_SECURITY))"
+else
+	@echo "No security tools configured — add your checks above"
+endif

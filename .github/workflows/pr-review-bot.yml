@@ -12,6 +12,8 @@ concurrency:
 jobs:
   review:
     name: Multi-Agent Review
+    # Customize: use 'self-hosted' if you have a runner with claude/gemini/codex CLIs installed
+    # Or use 'ubuntu-latest' and install the CLIs in a setup step
     runs-on: self-hosted
     timeout-minutes: 10
 
@@ -30,3 +32,7 @@ jobs:
         run: scripts/pr-review-bot.sh ${{ github.event.pull_request.number }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Customize: add your API keys as repository secrets
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

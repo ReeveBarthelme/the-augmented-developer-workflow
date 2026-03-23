@@ -1,6 +1,6 @@
 ---
 name: orchestrate-investigation
-description: "Multi-agent investigation — REPLACES /plan as the entry point for all non-trivial tasks. Spawns Gemini + Codex + Claude in parallel, performs Linus Torvalds review, requires $100 confidence bet. Use for ALL feature requests, bug fixes, refactors, or investigations."
+description: "Multi-agent investigation — the entry point for all non-trivial tasks. Spawns Gemini + Codex + Claude in parallel, performs Linus Torvalds review, requires $100 confidence bet. Use for ALL feature requests, bug fixes, refactors, or investigations."
 allowed-tools:
   - Task
   - Bash
@@ -16,7 +16,7 @@ allowed-tools:
 
 **This skill operates in Investigation mode.** Do NOT attempt code changes or deploys. Output is a plan document with findings, not implementation.
 
-**This skill REPLACES `/plan` mode** as the entry point for all non-trivial tasks. Do NOT enter `/plan` mode first — `/plan` blocks the Bash and Task tools needed to spawn Gemini and Codex agents. This skill provides all the same guarantees (read-only exploration, plan output, user approval gate) plus multi-agent investigation.
+**This skill is the entry point for all non-trivial tasks.** It provides read-only exploration, plan output, and a user approval gate — plus the full multi-agent investigation pipeline. Do NOT use Claude Code's built-in plan mode (`/plan`) for tasks that need multi-agent investigation, as plan mode blocks the Bash and Task tools needed to spawn Gemini and Codex agents.
 
 ## Phase 0: Environment Verification (MANDATORY)
 
@@ -118,7 +118,9 @@ Run this via the **Bash** tool (NOT the Task tool). This calls the actual Gemini
 # Source fallback wrapper
 source .claude/scripts/gemini-with-fallback.sh
 
-gemini_with_fallback "Investigate the following task: {TASK_DESCRIPTION}
+# SECURITY: Write prompt to temp file to prevent bash expansion of task description
+cat <<'GEMINI_PROMPT' > /tmp/gemini-investigation-prompt.txt
+Investigate the following task: {TASK_DESCRIPTION}
 
 Your focus is RISK ANALYSIS and CURRENT BEST PRACTICES:
 
@@ -148,11 +150,13 @@ OUTPUT FORMAT:
 - Group findings by: Security | Performance | Edge Cases | Best Practices
 - Rate each risk: Critical / Major / Minor (use critique-standards definitions)
 - Provide specific mitigation for each identified risk
-- Cite sources for best practice recommendations" \
--o text
+- Cite sources for best practice recommendations
+GEMINI_PROMPT
+
+gemini_with_fallback "$(cat /tmp/gemini-investigation-prompt.txt)" -o text
 ```
 
-**SECURITY NOTE**: The Gemini prompt above uses double-quoted strings. When substituting `{TASK_DESCRIPTION}`, ensure the description does not contain bash special characters (`$`, `` ` ``, `\`). For untrusted or complex descriptions, write the prompt to a temp file and pass via `gemini -f /tmp/prompt.txt`.
+**SECURITY NOTE**: The prompt is written to a temp file using a single-quoted heredoc to prevent bash expansion of `{TASK_DESCRIPTION}`. When constructing the actual prompt, replace `{TASK_DESCRIPTION}` in the temp file before passing to gemini. For untrusted descriptions, always use this file-based approach rather than inline string substitution.
 
 ### Agent 3: Codex (Deep Code Analysis)
 

@@ -7,7 +7,7 @@ You are maintaining modular file structure for continuous AI integration.
 
 ## Core Principle
 
-**FILES <= 700 LINES FOR AI-FRIENDLY CONTEXT**. Prevent monolithic files that hurt AI performance.
+**FILES <= 500 LINES TARGET, 700 ABSOLUTE MAXIMUM**. Prevent monolithic files that hurt AI performance. Flag at 500 lines, split at 700.
 
 ## When This Skill Activates
 

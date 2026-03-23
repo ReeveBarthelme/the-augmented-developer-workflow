@@ -51,6 +51,12 @@ if [[ -z "$REPO_ROOT" || ! -f "$REPO_ROOT/Makefile" ]]; then
     exit 0
 fi
 
+# Check that the Makefile has a pre-merge target (dry-run)
+if ! (cd "$REPO_ROOT" && make -n pre-merge >/dev/null 2>&1); then
+    echo '{"permissionDecision": "allow", "systemMessage": "Makefile found but no pre-merge target. Add a pre-merge target or see Makefile.example."}'
+    exit 0
+fi
+
 # Run pre-merge checks synchronously — must pass before merge is allowed
 # Capture both output and exit code in one invocation
 set +e

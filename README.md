@@ -40,7 +40,7 @@ Each stage is **independently useful** — you can use `/vdd` without `/sdd`, or
 | **pr-review** | Structured PR review methodology with severity-based findings and actionable feedback |
 | **pr-bot** | Automated PR review bot configuration for CI/CD integration |
 | **post-deploy-verification** | Post-deployment verification with $100 bet pattern — would you bet $100 it works? |
-| **critique-standards** | Severity classification standards for code review findings (Critical/High/Medium/Low) |
+| **critique-standards** | Severity classification standards for code review findings (Critical/Major/Minor/Suggestion) |
 | **gemini-cli** | Complete Gemini CLI reference — patterns, tools, templates for multi-model workflows |
 | **codex** | OpenAI Codex CLI reference for multi-model orchestration |
 | **modular-architecture** | Modular architecture patterns — dependency boundaries, interface contracts, module isolation |

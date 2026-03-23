@@ -1,0 +1,34 @@
+# GEMINI.md — [Your Project Name]
+
+<!-- Copy this to .gemini/GEMINI.md in your project root. Gemini CLI reads it automatically. -->
+
+## Project Overview
+
+<!-- Customize: describe your project -->
+
+## Project Structure
+
+| Module | Path | Purpose |
+|--------|------|---------|
+| **Backend** | `src/` | API, services, data layer |
+| **Frontend** | `frontend/` | UI components |
+| **Shared** | `shared/` | Common utilities |
+
+## Code Standards
+
+| Principle | Requirement |
+|-----------|-------------|
+| **TDD** | Write tests BEFORE implementation |
+| **DRY** | 3+ identical blocks → extract to function |
+| **Types** | Annotations required, proper None handling |
+| **Files** | <500 lines per file |
+| **Security** | No secrets in logs |
+
+## Key Commands
+
+| Task | Command |
+|------|---------|
+| Run tests | `# your test command` |
+| Deploy | `# your deploy command` |
+| View logs | `# your log command` |
+| Local dev | `# your local dev command` |
