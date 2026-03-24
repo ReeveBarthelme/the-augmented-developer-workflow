@@ -2,11 +2,13 @@ name: Multi-Agent PR Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
+  issue_comment:
+    types: [created]
 
 # Cancel in-progress reviews when a new push arrives
 concurrency:
-  group: pr-review-${{ github.event.pull_request.number }}
+  group: pr-review-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: true
 
 jobs:
@@ -17,10 +19,16 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 10
 
-    # Skip draft PRs and bot-authored PRs
+    # Run on PR events (skip drafts, bots, skip-label) OR @review comments on PRs
     if: |
-      !github.event.pull_request.draft &&
-      github.actor != 'dependabot[bot]'
+      (github.event_name == 'pull_request' &&
+       !github.event.pull_request.draft &&
+       github.actor != 'dependabot[bot]' &&
+       !contains(github.event.pull_request.labels.*.name, 'skip-ai-review')) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '@review') &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
 
     steps:
       - name: Checkout code
@@ -28,10 +36,25 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run multi-agent review
-        run: scripts/pr-review-bot.sh ${{ github.event.pull_request.number }}
+      # For @review comments, checkout checks out the default branch.
+      # Switch to the PR head so Claude's Read/Grep tools see the right code.
+      - name: Checkout PR head
+        if: github.event_name == 'issue_comment'
+        run: gh pr checkout "$PR_NUM"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ github.event.issue.number }}
+
+      - name: Run multi-agent review
+        run: |
+          if [ "$EVENT_NAME" = "issue_comment" ]; then
+            export FORCE_REVIEW=true
+          fi
+          scripts/pr-review-bot.sh "$PR_NUM"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUM: ${{ github.event.pull_request.number || github.event.issue.number }}
           # Customize: add your API keys as repository secrets
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

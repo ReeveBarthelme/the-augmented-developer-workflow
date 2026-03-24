@@ -225,20 +225,43 @@ CODEX_PROMPT
 | Gemini (Security) | ? | ? | ? | ? |
 | Codex (Edge Cases) | ? | ? | ? | ? |
 
-### Autonomous Fix Loop (Max 3 Iterations)
+### Autonomous Fix Loop — Selective Re-Review (Max 3 Iterations)
 
 **If ANY agent votes REQUEST_CHANGES with Critical or Major issues:**
 
-1. **Implement fixes** for all Critical and Major issues identified
-2. **Run targeted tests** for the affected code to verify fixes don't break anything
-3. **Re-spawn ALL 3 agents** — fixes can introduce new issues in domains other agents cover
-4. **Collect new votes**
+1. **Track which agent(s)** voted REQUEST_CHANGES with Critical or Major issues
+2. **Implement fixes** for all Critical and Major issues identified
+3. **Run targeted tests** for the affected code to verify fixes don't break anything
+4. **Selective re-review** (saves agent calls vs re-spawning all 3):
+   - Re-run **only the flagging agent(s)** to verify the fix addresses their concerns
+   - Run **Claude as cross-domain checker** on just the fix diff (one agent on a small diff catches side effects cheaply)
+   - **Escalate to full 3-agent re-review** only if the fix diff touches multiple domains (e.g., both backend routes and frontend components)
+5. **Collect new votes**
 
-Repeat up to 3 iterations.
+Example:
+```
+=== REVIEW ITERATION 1: 2 Critical, 1 Major from Gemini ===
+=== FIX: Addressed 2 Critical (IDOR in products.py, SQL injection in search) ===
+=== REVIEW ITERATION 2: Re-running Gemini (verify fix) + Claude (cross-domain check) ===
+=== REVIEW ITERATION 2: Both approve → done (saved 1 Codex call) ===
+```
 
-**If still REQUEST_CHANGES after 3 iterations**, escalate to user for human review.
+Repeat up to 3 iterations. Track iteration count.
 
-**Minor and Suggestion issues** are logged but do NOT block.
+**If still REQUEST_CHANGES after 3 iterations:**
+```
+=== REVIEW ESCALATION: Still finding issues after 3 fix iterations ===
+Unresolved issues:
+- [list remaining Critical/Major issues]
+
+Human review required. Options:
+1. Fix specific issues manually
+2. Accept with known limitations
+3. Abort and redesign
+```
+Wait for user input.
+
+**Minor and Suggestion issues** are logged but do NOT block. They are included in the commit message as "Known minor issues" if applicable.
 
 ## Phase 3: Decision Gate
 

@@ -28,7 +28,7 @@ Each stage is **independently useful** — you can use `/vdd` without `/sdd`, or
 
 ## What's Included
 
-**25 assets** across 6 categories:
+**28 assets** across 6 categories:
 
 ### Skills (12) — `.claude/skills/`
 
@@ -47,13 +47,14 @@ Each stage is **independently useful** — you can use `/vdd` without `/sdd`, or
 | **testing-strategy** | Test strategy framework — unit/integration/e2e pyramid, coverage gates, test patterns |
 | **docs-architect** | Documentation architecture — ADRs, API docs, runbooks, structured documentation |
 
-### Commands (3) — `.claude/commands/`
+### Commands (4) — `.claude/commands/`
 
 | Command | What It Does |
 |---------|-------------|
 | **`/vdd`** | **Verified-Driven Development** — Phase-by-phase implementation with 2 critic agents (code-quality-enforcer + architecture-critic) reviewing each phase. Iterates until both critics pass. |
 | **`/sdd`** | **Spec-Driven Development** — Generates a formal specification using adversarial critique between spec-builder and spec-critic agents. Iterates until the spec is bulletproof. |
 | **`/tdd`** | **Test-Driven Development** — Generates tests from a spec, enforces the Red Gate (tests must fail first), then optionally implements to make them pass. |
+| **`/wrap-up`** | **Session Wrap-Up** — 5-phase end-of-session workflow: commit changes, prune memory, save learnings, self-improve, report. Triggered automatically by Stop hook when uncommitted changes exist. |
 
 ### Agents (4) — `.claude/agents/`
 
@@ -64,26 +65,28 @@ Each stage is **independently useful** — you can use `/vdd` without `/sdd`, or
 | **spec-builder** | Generates detailed specifications from requirements. Used by `/sdd`. |
 | **spec-critic** | Adversarially reviews specs for gaps, ambiguities, and missing edge cases. Used by `/sdd`. |
 
-### Hooks (3) — `.claude/hooks/`
+### Hooks (4) — `.claude/hooks/`
 
 | Hook | Trigger | What It Does |
 |------|---------|-------------|
 | **pre-merge-gate.sh** | Before merge | Runs `make pre-merge` to enforce quality gates |
 | **post-create-check.sh** | After file creation | Validates new files meet project standards |
 | **post-tool-use-tracker.sh** | After tool use | Tracks which files are being modified for audit |
+| **stop-wrap-up-reminder.sh** | Session stop | Reminds about `/wrap-up` when uncommitted changes exist. Blocks once, allows stop on second attempt. |
 
-### Scripts (2)
+### Scripts (3)
 
 | Script | What It Does |
 |--------|-------------|
-| **pr-review-bot.sh** | Multi-agent PR review — sends PR to Claude, Gemini, and Codex for independent review, synthesizes findings |
+| **pr-review-bot.sh** | Multi-agent PR review — sends PR to Claude, Gemini, and Codex for independent review, synthesizes findings. Includes hunk-aware diff truncation, non-code PR skipping, delta-aware re-review gating, and `@review` comment trigger. |
+| **lib-pr-review-utils.sh** | Shared library for pr-review-bot.sh — diff truncation, line mapping, output parsing, review posting |
 | **gemini-with-fallback.sh** | Runs Gemini CLI with automatic fallback if unavailable |
 
 ### GitHub Actions (1)
 
 | Workflow | What It Does |
 |----------|-------------|
-| **pr-review-bot.yml** | Triggers `pr-review-bot.sh` automatically on PR creation/update |
+| **pr-review-bot.yml** | Triggers `pr-review-bot.sh` on PR creation/update, `@review` comments, and label changes. Supports `skip-ai-review` label. |
 
 ## Quick Start
 
@@ -129,7 +132,14 @@ cp -r the-augmented-developer-workflow/.claude/skills/orchestrate-investigation/
 
 # Just the PR review bot
 cp the-augmented-developer-workflow/scripts/pr-review-bot.sh your-project/scripts/
+cp the-augmented-developer-workflow/scripts/lib-pr-review-utils.sh your-project/scripts/
 cp -r the-augmented-developer-workflow/.github/ your-project/.github/
+
+# Just the session wrap-up command + stop hook
+cp the-augmented-developer-workflow/.claude/commands/wrap-up.md your-project/.claude/commands/
+cp the-augmented-developer-workflow/.claude/hooks/stop-wrap-up-reminder.sh your-project/.claude/hooks/
+chmod +x your-project/.claude/hooks/stop-wrap-up-reminder.sh
+# Then add the Stop hook to your .claude/settings.json (see settings.json for format)
 ```
 
 See [INSTALL.md](INSTALL.md) for detailed setup instructions.

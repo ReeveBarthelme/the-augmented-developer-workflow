@@ -28,6 +28,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/stop-wrap-up-reminder.sh",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
