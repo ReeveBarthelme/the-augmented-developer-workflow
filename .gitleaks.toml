@@ -1,0 +1,54 @@
+# Gitleaks Configuration
+# Secret detection allowlists for CI/CD pipeline
+
+title = "Gitleaks Configuration"
+
+[allowlist]
+description = "Allowlist for false positives and safe patterns"
+
+# Path patterns to exclude from scanning
+paths = [
+  # Example environment files (contain placeholders, not real secrets)
+  '''\.env\.example$''',
+
+  # Dependencies (third-party code)
+  '''node_modules/''',
+  '''\.venv/''',
+  '''__pycache__/''',
+
+  # Test fixtures and test data
+  '''tests/fixtures/''',
+  '''e2e/fixtures\.ts$''',
+  '''\.test\.(ts|tsx|js|jsx|py)$''',
+  '''_test\.py$''',
+  '''test_.*\.py$''',
+
+  # Build artifacts and caches
+  '''dist/''',
+  '''build/''',
+  '''\.mypy_cache/''',
+  '''\.pytest_cache/''',
+
+  # Lock files (contain package checksums, not secrets)
+  '''package-lock\.json$''',
+  '''yarn\.lock$''',
+  '''poetry\.lock$''',
+]
+
+# Regex patterns for false positive values
+regexes = [
+  # Firebase Web API keys are public by design (security via Firebase rules)
+  '''AIzaSy[a-zA-Z0-9_-]{33}''',
+
+  # Placeholder patterns in example/template files
+  '''YOUR[-_].*[-_]HERE''',
+  '''your[-_].*[-_]here''',
+  '''REPLACE[-_]WITH[-_]''',
+  '''<your[-_].*>''',
+
+  # Common test/mock values
+  '''test[-_]?api[-_]?key''',
+  '''mock[-_]?secret''',
+  '''fake[-_]?password''',
+  '''dummy[-_]?token''',
+]

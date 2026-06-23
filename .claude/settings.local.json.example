@@ -1,0 +1,15 @@
+{
+  "//": "Copy this file to settings.local.json to add machine-specific, untracked permission grants.",
+  "//1": "settings.local.json is gitignored — it never gets committed or published.",
+  "//2": "Use `/fewer-permission-prompts` to auto-generate an allowlist from your own transcripts,",
+  "//3": "or add entries by hand. Prefer narrow, read-only commands. Examples below:",
+  "permissions": {
+    "allow": [
+      "Skill(orchestrate-investigation)",
+      "Bash(npm test:*)",
+      "Bash(pytest:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)"
+    ]
+  }
+}

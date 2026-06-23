@@ -24,6 +24,8 @@
 | **Types** | Annotations required, proper None handling |
 | **Files** | <500 lines per file |
 | **Security** | No secrets in logs, no secrets in code |
+| **YAGNI / Scope gate** | Before building: stdlib/native → already-installed dep → **no unrequested abstraction**. Challenge an over-broad ask *before* writing, not in review. Smells: single-caller abstraction, factory for one product, wrapper that only delegates, dead flags. |
+| **Mark shortcuts** | Every deliberate shortcut gets a greppable marker naming its exit path: `# SHORTCUT: <ceiling> — <upgrade path>`. Turns invisible debt into `grep`-able debt. |
 
 ## Workflow Discipline
 
@@ -66,6 +68,16 @@
 3. **QA pass**: Run `/qa --quick` for small changes, `/qa` for significant features
 4. **Ad-hoc exploration**: Use `/browse` for targeted page checks and screenshots
 
+## Evidence Discipline
+
+Hard-won rules for not shipping false "it works" — each prevents a specific way verification lies:
+
+- **Read the exit status, not buffered output.** Never pipe a long verification through `| tail` / `| head` / `2>/dev/null` — the pipe returns the *filter's* exit code, not the command's, so the "pass" is meaningless. Redirect to a file and check `$?` (and beware `${PIPESTATUS[0]}` — it's a bashism that silently misfires under zsh).
+- **Probe the real path.** An ad-hoc probe (grep, shell loop, hand-fed input) must read the *same field/input the code consumes*. A probe that inspects a different field than the code does manufactures confident, wrong conclusions — worse than no probe.
+- **Test hygiene can hide the prod bug.** A test that sets a convenient env var (`SOME_PATH=/tmp/...`) or auto-stubs a service can reroute around the exact broken default. Run at least one verification with the var *unset* / against real defaults before claiming "fixed."
+- **Separate "implementable" from "correctly diagnosed."** When you state a $100 confidence wager, bet on the *root cause / right layer* separately from "can be built" — and name the specific evidence that would move a "not yet" to "yes."
+- **Bigger ≠ better.** A larger "root-cause" fix gated behind an unrun migration/backfill delivers zero value now while carrying full risk. Weigh value-vs-risk, not just correctness — and keep a fix and the guard that prevents its regression in the *same* place so a later author can't undo one without seeing the other.
+
 ## Essential Commands
 
 <!-- Customize: fill in your project's commands -->
@@ -88,7 +100,7 @@
   # pip install pip-audit "bandit[toml]"  # Python
   # npm audit                              # Node.js
   ```
-- **Escape hatch**: `SKIP_SECURITY=true make pre-merge` bypasses security scans during rapid iteration
+- **Escape hatches** (use sparingly): `SKIP_SECURITY=true make pre-merge` bypasses the Makefile `security` target. The opt-in pre-commit secret-scan hook (`.githooks/pre-commit`) has its **own** separate vars — `SKIP_SECRET_SCAN`, `SKIP_MIGRATION_CHECK`, `SKIP_HOOKS` (see `.githooks/README.md`). They are different layers.
 
 ## Module-Specific Context
 

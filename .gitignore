@@ -17,6 +17,12 @@ Thumbs.db
 # Claude Code local settings (contains user-specific allowed commands with absolute paths)
 .claude/settings.local.json
 
+# Claude Code runtime logs (post-merge-cleanup, etc.)
+.claude/logs/
+
+# Git worktrees (created by the orchestrate-* / worktree workflow)
+.worktrees/
+
 # Temp
 /tmp/
 *.log
