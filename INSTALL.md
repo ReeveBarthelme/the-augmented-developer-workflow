@@ -22,6 +22,10 @@ cp -r .github/ /path/to/your-project/.github/
 cp .gitleaks.toml /path/to/your-project/
 cp -r .githooks/ /path/to/your-project/.githooks/
 
+# Supply-chain hardening (optional but recommended)
+cp .npmrc /path/to/your-project/                 # blocks malicious npm install scripts
+# .github/workflows/security.yml is included in the .github/ copy above
+
 # Make scripts executable
 chmod +x /path/to/your-project/.claude/hooks/*.sh
 chmod +x /path/to/your-project/.claude/scripts/*.sh
@@ -226,6 +230,56 @@ SECURITY.md
 
 Bypass with `SKIP_SECRET_SCAN=1`, `SKIP_MIGRATION_CHECK=1`, or `SKIP_HOOKS=1`.
 See `.githooks/README.md` and `SECURITY.md`.
+
+### Supply-Chain Hardening (Bad-Package Defense)
+
+Stops malicious or vulnerable npm/Python packages from running code or shipping.
+
+**Files needed:**
+```
+.npmrc                          (blocks npm install-script execution)
+.github/workflows/security.yml  (pip-audit + npm audit + bandit + gitleaks + SBOM)
+```
+
+**Setup:**
+1. Copy `.npmrc` to your project root (and into any subdir with its own
+   `package.json`). It sets `ignore-scripts=true` — the single most effective
+   defense against npm install-hook worms (shai-hulud / TanStack class) — plus
+   `audit-level=high`. See the file's header for the native-build escape hatch.
+2. Copy `.github/workflows/security.yml` and **customize the `# Customize:`
+   markers** (requirements file paths, frontend dir, bandit source dirs). Remove
+   any job your stack doesn't use (e.g. drop `npm-audit` for a pure-Python repo).
+3. For local pre-merge mirroring, the `Makefile.example` `security:` target now
+   runs `gitleaks` + `pip-audit` + `bandit` + `npm audit` when each is installed.
+
+**Python note:** `pip` only runs code from *source* distributions, not wheels.
+For stronger Python supply-chain safety, pin and verify hashes:
+```bash
+pip install --require-hashes -r requirements.txt   # needs hashes in the file
+pip install --only-binary :all: <pkg>              # avoid sdist setup.py execution
+```
+`pip-audit` (in `security.yml`) covers the CVE side.
+
+### Resume / Start Session (Pipeline Entry Point)
+
+Reconstructs a previous Claude Code session from its raw JSONL and reports
+wrap-up items — the entry point of the workflow pipeline.
+
+**Files needed:**
+```
+.claude/skills/resume-session/SKILL.md
+```
+
+**Usage:** Start a message with "continuing from session id `<UUID>`" (or "where
+did we leave off in session `<UUID>`"). It locates
+`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, summarizes the last
+exchange, and surfaces uncommitted changes / open PRs / dangling todos. It
+**stops after the report** — it never auto-merges or deploys. Distinct from
+`/context-restore` (which reads `/context-save` checkpoints).
+
+**Pipeline:** `resume-session` → `/orchestrate-investigation` → `/sdd` → `/tdd`
+→ `/vdd` → verify (`/qa` loop, gstack) → `/orchestrate-review-deploy` →
+`/wrap-up`.
 
 ### Token Optimization (RTK)
 

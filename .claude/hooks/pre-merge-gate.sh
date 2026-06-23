@@ -29,6 +29,14 @@ else
     exit 0
 fi
 
+# Fail CLOSED: the raw fast-path already matched a merge pattern, so this is
+# very likely a merge. If jq could not extract a command (empty — malformed or
+# unexpectedly-shaped JSON), block rather than wave it through ungated.
+if [[ -z "$COMMAND" ]]; then
+    echo '{"permissionDecision": "block", "systemMessage": "Detected a likely \"gh pr merge\" but could not parse the command to run the pre-merge gate. Blocking to fail closed — re-run, or run `make pre-merge` manually and merge once it passes."}'
+    exit 0
+fi
+
 # Repo-scoped log avoids symlink attacks on predictable /tmp paths (CWE-377).
 # Falls back to /dev/null outside a git repo.
 _GIT_DIR="$(git rev-parse --git-dir 2>/dev/null || true)"

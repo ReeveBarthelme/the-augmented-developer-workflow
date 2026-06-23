@@ -40,6 +40,10 @@
 
 **Session types**: Investigation (plan, no code) · Implementation (code+tests, no deploy) · Deployment (verify, no new code)
 
+### Session resume (pipeline entry point)
+
+"continuing from session id `<UUID>`" (or "where did we leave off in session `<UUID>`") → use the **`resume-session`** skill, NOT `/context-restore`. It rebuilds the prior session from its raw JSONL and reports wrap-up state. Full loop: `resume-session` → `/orchestrate-investigation` → `/sdd`/`/tdd`/`/vdd` → verify (`/qa` loop) → `/orchestrate-review-deploy` → `/wrap-up`.
+
 ### Investigation Phase — Use `/orchestrate-investigation` (NOT `/plan`)
 
 **`/orchestrate-investigation` is the entry point for all non-trivial tasks.** Do NOT use `/plan` — it blocks the Bash and Task tools needed to spawn Gemini/Codex agents.

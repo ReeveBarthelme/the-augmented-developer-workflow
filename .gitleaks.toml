@@ -3,6 +3,14 @@
 
 title = "Gitleaks Configuration"
 
+# CRITICAL: gitleaks REPLACES its built-in ruleset with whatever this file
+# declares. Without [extend].useDefault this config would ship ZERO detection
+# rules — the allowlist below would apply to nothing and every secret would pass.
+# `useDefault = true` layers our allowlist ON TOP of gitleaks' full default
+# ruleset (AWS, GCP, GitHub, Stripe, private keys, …). Do NOT remove this.
+[extend]
+useDefault = true
+
 [allowlist]
 description = "Allowlist for false positives and safe patterns"
 
@@ -37,9 +45,6 @@ paths = [
 
 # Regex patterns for false positive values
 regexes = [
-  # Firebase Web API keys are public by design (security via Firebase rules)
-  '''AIzaSy[a-zA-Z0-9_-]{33}''',
-
   # Placeholder patterns in example/template files
   '''YOUR[-_].*[-_]HERE''',
   '''your[-_].*[-_]here''',
@@ -52,3 +57,12 @@ regexes = [
   '''fake[-_]?password''',
   '''dummy[-_]?token''',
 ]
+
+# NOTE on Google "AIzaSy…" keys — deliberately NOT globally allowlisted.
+# The pattern AIzaSy[A-Za-z0-9_-]{33} matches EVERY Google API key, including
+# billable Maps / Cloud / Translation keys — not just public-by-design Firebase
+# Web config keys. Globally ignoring it would let a real, abusable key leak.
+# If you genuinely commit a public Firebase Web key, allowlist it NARROWLY by the
+# exact file that holds it (add to `paths` above), e.g.:
+#   '''src/firebaseConfig\.ts$'''
+# Never re-add the bare key pattern to this global `regexes` list.

@@ -52,6 +52,11 @@ case "${SKIP_SECRET_SCAN:-}" in
         echo "   Bypass (only if you are certain): SKIP_SECRET_SCAN=1 git commit ..." >&2
         fail=1
       fi
+    else
+      # Do NOT fail silently: an adopter who enabled this hook expects secret
+      # scanning. Warn loudly that it is disabled so the gap is visible.
+      echo "⚠️  pre-commit: gitleaks not installed — secret scan SKIPPED (commit NOT scanned)." >&2
+      echo "    Install it to enable scanning: brew install gitleaks" >&2
     fi
     ;;
 esac

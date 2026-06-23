@@ -10,6 +10,8 @@ This isn't a framework — it's a **complete workflow** extracted from real prod
 ┌────────────────────────────┬──────────────────────────────────────────────────────────────┬───────────────┐
 │          You type          │                         What happens                         │ Code written? │
 ├────────────────────────────┼──────────────────────────────────────────────────────────────┼───────────────┤
+│ resume-session             │ Rebuild a prior session from its JSONL, report wrap-up       │ No            │
+├────────────────────────────┼──────────────────────────────────────────────────────────────┼───────────────┤
 │ /orchestrate-investigation │ 3 agents investigate, Linus review, $100 bet, plan produced  │ No            │
 ├────────────────────────────┼──────────────────────────────────────────────────────────────┼───────────────┤
 │ /sdd                       │ Formal spec via adversarial critique (spec-builder + critic) │ No (spec)     │
@@ -21,19 +23,22 @@ This isn't a framework — it's a **complete workflow** extracted from real prod
 │ "verify it works"          │ Tests + /qa (auto-fix) or /qa-only (report), /browse         │ Fixes only    │
 ├────────────────────────────┼──────────────────────────────────────────────────────────────┼───────────────┤
 │ /orchestrate-review-deploy │ 3-model review, auto-fix loop, commit, deploy staging        │ Fixes only    │
+├────────────────────────────┼──────────────────────────────────────────────────────────────┼───────────────┤
+│ /wrap-up                   │ Commit, prune memory, save learnings, self-improve, report   │ Fixes only    │
 └────────────────────────────┴──────────────────────────────────────────────────────────────┴───────────────┘
 ```
 
-Each stage is **independently useful** — you can use `/vdd` without `/sdd`, or run `/orchestrate-review-deploy` on code you wrote manually.
+The full loop: **`resume-session` → `/orchestrate-investigation` → `/sdd` → `/tdd` → `/vdd` → verify (`/qa` loop) → `/orchestrate-review-deploy` → `/wrap-up`.** Each stage is **independently useful** — you can use `/vdd` without `/sdd`, or run `/orchestrate-review-deploy` on code you wrote manually.
 
 ## What's Included
 
-**44 assets** across 8 categories:
+**47 assets** across 8 categories:
 
-### Skills (12) — `.claude/skills/`
+### Skills (13) — `.claude/skills/`
 
 | Skill | What It Does |
 |-------|-------------|
+| **resume-session** | Pipeline entry point — reconstructs a prior Claude Code session from its raw JSONL, summarizes the last exchange, and reports wrap-up items (uncommitted changes, open PRs, dangling todos). Read-only; stops after the report. |
 | **orchestrate-investigation** | Launches 3 parallel agents (Claude, Gemini, Codex) to investigate a problem, synthesizes findings, produces a plan with Linus-style review and $100 bet |
 | **orchestrate-review-deploy** | 3-model code review → auto-fix loop → commit → deploy, with quality gates at each stage |
 | **root-cause-investigation** | Systematic 4-phase root cause analysis: evidence gathering, hypothesis formation, verification, fix |
@@ -93,7 +98,7 @@ Each stage is **independently useful** — you can use `/vdd` without `/sdd`, or
 | **reviewer-with-fallback.sh** | `.claude/scripts/` | Multi-provider reviewer for advisory/investigation seats. Provider chain: Groq → Cerebras → Ollama → Gemini. Exit-code contract (0/64/75/78); forbids `*security*`/`design-vote` seats from degrading to the free tier. |
 | **reviewer-providers.sh** | `.claude/scripts/` | Provider-attempt library sourced by `reviewer-with-fallback.sh` (Groq/Cerebras/Ollama/Gemini), with spend logging. |
 
-### Security (4)
+### Security (5)
 
 | Asset | What It Does |
 |-------|-------------|
@@ -101,6 +106,7 @@ Each stage is **independently useful** — you can use `/vdd` without `/sdd`, or
 | **.githooks/pre-commit** | Opt-in pre-commit hook: `gitleaks protect --staged` secret scan + optional migration prefix-collision guard. Bypass via `SKIP_*` env vars. |
 | **.githooks/README.md** | How to enable (`git config core.hooksPath .githooks`), customize, and bypass the hook. |
 | **SECURITY.md** | Documents the secret-scanning layer and how to wire it up. |
+| **.npmrc** | Supply-chain guard — `ignore-scripts=true` blocks malicious npm install-hooks (shai-hulud / TanStack class) + `audit-level=high`. Copy to project root and any subdir with its own `package.json`. |
 
 See [SECURITY.md](SECURITY.md) to enable secret scanning.
 
@@ -110,11 +116,12 @@ See [SECURITY.md](SECURITY.md) to enable secret scanning.
 |-------|-------------|
 | **docs/token-optimization.md** | Optional reference for wiring up RTK ("Rust Token Killer"), a CLI proxy that cut ~70% of tokens on routine shell ops in real use. Reference only — nothing bundled. |
 
-### GitHub Actions (1)
+### GitHub Actions (2)
 
 | Workflow | What It Does |
 |----------|-------------|
 | **pr-review-bot.yml** | Triggers `pr-review-bot.sh` on PR creation/update, `@review` comments, and label changes. Supports `skip-ai-review` label. |
+| **security.yml** | Supply-chain + SAST scanning on main push / weekly: `pip-audit` (Python CVEs), `npm audit`, `gitleaks` (secrets), `bandit` (Python SAST), and a CycloneDX SBOM. Customize the `# Customize:` markers for your paths. |
 
 ## Quick Start
 
@@ -136,6 +143,9 @@ cp -r the-augmented-developer-workflow/.github/ your-project/.github/
 # Copy the security layer (optional)
 cp the-augmented-developer-workflow/.gitleaks.toml your-project/
 cp -r the-augmented-developer-workflow/.githooks/ your-project/.githooks/
+
+# Copy the supply-chain guard (optional, recommended for npm projects)
+cp the-augmented-developer-workflow/.npmrc your-project/
 
 # Make hooks and scripts executable
 chmod +x your-project/.claude/hooks/*.sh

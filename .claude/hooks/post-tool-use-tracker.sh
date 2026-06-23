@@ -64,7 +64,7 @@ fi
 
 # If working on tests, check if corresponding code exists
 # Covers: Python (test_*.py, *_test.py), TS/JS (*.test.ts/js), Go (*_test.go), Rust, Java
-if echo "$MODIFIED_FILES" | grep -qE "test_.*\.py|_test\.(py|go)|\.test\.\(ts|js\)|\.spec\.\(ts|js\)|Test\.java|_spec\.rb"; then
+if echo "$MODIFIED_FILES" | grep -qE "test_.*\.py|_test\.(py|go)|\.test\.(ts|js)|\.spec\.(ts|js)|Test\.java|_spec\.rb"; then
     echo "Good: Tests being written (TDD compliant)"
 fi
 
