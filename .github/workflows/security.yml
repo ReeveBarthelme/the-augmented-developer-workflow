@@ -26,6 +26,11 @@ concurrency:
   group: security-${{ github.ref }}
   cancel-in-progress: true
 
+# Customize: these pin the interpreter that RUNS the scanners (pip-audit, bandit,
+# npm audit) — they do NOT have to match your app's runtime. pip-audit reads
+# requirements.txt against the OSV DB and bandit parses source, so neither needs
+# your project's exact Python; npm audit reads the lockfile. Pinning keeps CI
+# reproducible (vs. drifting with the runner default). Bump as new stable/LTS ship.
 env:
   PYTHON_VERSION: "3.13"
   NODE_VERSION: "22"
