@@ -10,6 +10,8 @@ This isn't a framework — it's a **complete workflow** extracted from real prod
 ┌────────────────────────────┬──────────────────────────────────────────────────────────────┬───────────────┐
 │          You type          │                         What happens                         │ Code written? │
 ├────────────────────────────┼──────────────────────────────────────────────────────────────┼───────────────┤
+│ resume-session             │ Rebuild a prior session from its JSONL, report wrap-up       │ No            │
+├────────────────────────────┼──────────────────────────────────────────────────────────────┼───────────────┤
 │ /orchestrate-investigation │ 3 agents investigate, Linus review, $100 bet, plan produced  │ No            │
 ├────────────────────────────┼──────────────────────────────────────────────────────────────┼───────────────┤
 │ /sdd                       │ Formal spec via adversarial critique (spec-builder + critic) │ No (spec)     │
@@ -21,19 +23,22 @@ This isn't a framework — it's a **complete workflow** extracted from real prod
 │ "verify it works"          │ Tests + /qa (auto-fix) or /qa-only (report), /browse         │ Fixes only    │
 ├────────────────────────────┼──────────────────────────────────────────────────────────────┼───────────────┤
 │ /orchestrate-review-deploy │ 3-model review, auto-fix loop, commit, deploy staging        │ Fixes only    │
+├────────────────────────────┼──────────────────────────────────────────────────────────────┼───────────────┤
+│ /wrap-up                   │ Commit, prune memory, save learnings, self-improve, report   │ Fixes only    │
 └────────────────────────────┴──────────────────────────────────────────────────────────────┴───────────────┘
 ```
 
-Each stage is **independently useful** — you can use `/vdd` without `/sdd`, or run `/orchestrate-review-deploy` on code you wrote manually.
+The full loop: **`resume-session` → `/orchestrate-investigation` → `/sdd` → `/tdd` → `/vdd` → verify (`/qa` loop) → `/orchestrate-review-deploy` → `/wrap-up`.** Each stage is **independently useful** — you can use `/vdd` without `/sdd`, or run `/orchestrate-review-deploy` on code you wrote manually.
 
 ## What's Included
 
-**28 assets** across 6 categories:
+**47 assets** across 8 categories:
 
-### Skills (12) — `.claude/skills/`
+### Skills (13) — `.claude/skills/`
 
 | Skill | What It Does |
 |-------|-------------|
+| **resume-session** | Pipeline entry point — reconstructs a prior Claude Code session from its raw JSONL, summarizes the last exchange, and reports wrap-up items (uncommitted changes, open PRs, dangling todos). Read-only; stops after the report. |
 | **orchestrate-investigation** | Launches 3 parallel agents (Claude, Gemini, Codex) to investigate a problem, synthesizes findings, produces a plan with Linus-style review and $100 bet |
 | **orchestrate-review-deploy** | 3-model code review → auto-fix loop → commit → deploy, with quality gates at each stage |
 | **root-cause-investigation** | Systematic 4-phase root cause analysis: evidence gathering, hypothesis formation, verification, fix |
@@ -56,7 +61,7 @@ Each stage is **independently useful** — you can use `/vdd` without `/sdd`, or
 | **`/tdd`** | **Test-Driven Development** — Generates tests from a spec, enforces the Red Gate (tests must fail first), then optionally implements to make them pass. |
 | **`/wrap-up`** | **Session Wrap-Up** — 5-phase end-of-session workflow: commit changes, prune memory, save learnings, self-improve, report. Triggered automatically by Stop hook when uncommitted changes exist. |
 
-### Agents (4) — `.claude/agents/`
+### Agents (9) — `.claude/agents/`
 
 | Agent | Role |
 |-------|------|
@@ -64,29 +69,59 @@ Each stage is **independently useful** — you can use `/vdd` without `/sdd`, or
 | **architecture-critic** | Reviews architectural decisions, module boundaries, dependency flow. Used by `/vdd`. |
 | **spec-builder** | Generates detailed specifications from requirements. Used by `/sdd`. |
 | **spec-critic** | Adversarially reviews specs for gaps, ambiguities, and missing edge cases. Used by `/sdd`. |
+| **clean-code-engineer** | Writes and refactors code with a focus on clean-code principles, SOLID, DRY/KISS. General-purpose implementation agent. |
+| **code-review-expert** | Reviews recently-written code for DRY violations, best practices, and maintainability with severity-ranked findings. |
+| **strategy-researcher** | Researches and compares modern approaches/technologies for a problem, weighing trade-offs (opus). |
+| **tech-lead-architect** | Strategic technical leadership — system design, technology evaluation, standards, architecture reviews (opus). |
+| **test-coverage-expert** | Designs comprehensive automated tests (unit/integration/e2e) to maximize meaningful coverage. |
 
-### Hooks (4) — `.claude/hooks/`
+### Hooks (7) — `.claude/hooks/`
 
 | Hook | Trigger | What It Does |
 |------|---------|-------------|
-| **pre-merge-gate.sh** | Before merge | Runs `make pre-merge` to enforce quality gates |
-| **post-create-check.sh** | After file creation | Validates new files meet project standards |
+| **pre-merge-gate.sh** | Before `gh pr merge` | Runs `make pre-merge` and blocks the merge if it fails. Fast-path exit for non-merge commands; repo-scoped log under `.git/` (CWE-377 safe); jq-based command parsing. |
+| **post-create-check.sh** | After `gh pr create` | Runs `make pre-merge` in a detached background process and posts the result as a PR comment. Non-blocking. |
+| **post-merge-cleanup.sh** | After `gh pr merge` | Auto-removes the merged worktree via `scripts/cleanup-worktrees.sh`. Non-blocking. |
+| **post-edit-lint.sh** | After Edit/Write | Auto-runs `ruff --fix` (Python) or the nearest `eslint --fix` (JS/TS) on the edited file. No-ops if the linter isn't installed. |
 | **post-tool-use-tracker.sh** | After tool use | Tracks which files are being modified for audit |
+| **session-start-status.sh** | Session start | Prints current branch + a summary of uncommitted changes for instant orientation. |
 | **stop-wrap-up-reminder.sh** | Session stop | Reminds about `/wrap-up` when uncommitted changes exist. Blocks once, allows stop on second attempt. |
 
-### Scripts (3)
+### Scripts (6)
 
-| Script | What It Does |
-|--------|-------------|
-| **pr-review-bot.sh** | Multi-agent PR review — sends PR to Claude, Gemini, and Codex for independent review, synthesizes findings. Includes hunk-aware diff truncation, non-code PR skipping, delta-aware re-review gating, and `@review` comment trigger. |
-| **lib-pr-review-utils.sh** | Shared library for pr-review-bot.sh — diff truncation, line mapping, output parsing, review posting |
-| **gemini-with-fallback.sh** | Runs Gemini CLI with automatic fallback if unavailable |
+| Script | Location | What It Does |
+|--------|----------|-------------|
+| **pr-review-bot.sh** | `scripts/` | Multi-agent PR review — sends PR to Claude, Gemini, and Codex for independent review, synthesizes findings. Includes hunk-aware diff truncation, non-code PR skipping, delta-aware re-review gating, and `@review` comment trigger. |
+| **lib-pr-review-utils.sh** | `scripts/` | Shared library for pr-review-bot.sh — diff truncation, line mapping, output parsing, review posting |
+| **cleanup-worktrees.sh** | `scripts/` | Removes `.worktrees/` worktrees whose PRs have merged (verified via GitHub API). `--dry-run` supported. Driven by the post-merge-cleanup hook. |
+| **gemini-with-fallback.sh** | `.claude/scripts/` | Runs Gemini CLI with automatic seat-tiered fallback if a model/quota is unavailable |
+| **reviewer-with-fallback.sh** | `.claude/scripts/` | Multi-provider reviewer for advisory/investigation seats. Provider chain: Groq → Cerebras → Ollama → Gemini. Exit-code contract (0/64/75/78); forbids `*security*`/`design-vote` seats from degrading to the free tier. |
+| **reviewer-providers.sh** | `.claude/scripts/` | Provider-attempt library sourced by `reviewer-with-fallback.sh` (Groq/Cerebras/Ollama/Gemini), with spend logging. |
 
-### GitHub Actions (1)
+### Security (5)
+
+| Asset | What It Does |
+|-------|-------------|
+| **.gitleaks.toml** | Gitleaks config with sensible allowlists (env examples, deps, test fixtures, placeholder regexes, public-by-design Firebase web API keys). |
+| **.githooks/pre-commit** | Opt-in pre-commit hook: `gitleaks protect --staged` secret scan + optional migration prefix-collision guard. Bypass via `SKIP_*` env vars. |
+| **.githooks/README.md** | How to enable (`git config core.hooksPath .githooks`), customize, and bypass the hook. |
+| **SECURITY.md** | Documents the secret-scanning layer and how to wire it up. |
+| **.npmrc** | Supply-chain guard — `ignore-scripts=true` blocks malicious npm install-hooks (shai-hulud / TanStack class) + `audit-level=high`. Copy to project root and any subdir with its own `package.json`. |
+
+See [SECURITY.md](SECURITY.md) to enable secret scanning.
+
+### Token Optimization (1)
+
+| Asset | What It Does |
+|-------|-------------|
+| **docs/token-optimization.md** | Optional reference for wiring up RTK ("Rust Token Killer"), a CLI proxy that cut ~70% of tokens on routine shell ops in real use. Reference only — nothing bundled. |
+
+### GitHub Actions (2)
 
 | Workflow | What It Does |
 |----------|-------------|
 | **pr-review-bot.yml** | Triggers `pr-review-bot.sh` on PR creation/update, `@review` comments, and label changes. Supports `skip-ai-review` label. |
+| **security.yml** | Supply-chain + SAST scanning on main push / weekly: `pip-audit` (Python CVEs), `npm audit`, `gitleaks` (secrets), `bandit` (Python SAST), and a CycloneDX SBOM. Customize the `# Customize:` markers for your paths. |
 
 ## Quick Start
 
@@ -94,7 +129,7 @@ Each stage is **independently useful** — you can use `/vdd` without `/sdd`, or
 
 ```bash
 # Clone this repo
-git clone https://github.com/reeveb/the-augmented-developer-workflow.git
+git clone https://github.com/ReeveBarthelme/the-augmented-developer-workflow.git
 
 # Copy the .claude directory into your project
 cp -r the-augmented-developer-workflow/.claude/ your-project/.claude/
@@ -105,10 +140,21 @@ cp -r the-augmented-developer-workflow/scripts/ your-project/scripts/
 # Copy GitHub Actions (optional)
 cp -r the-augmented-developer-workflow/.github/ your-project/.github/
 
+# Copy the security layer (optional)
+cp the-augmented-developer-workflow/.gitleaks.toml your-project/
+cp -r the-augmented-developer-workflow/.githooks/ your-project/.githooks/
+
+# Copy the supply-chain guard (optional, recommended for npm projects)
+cp the-augmented-developer-workflow/.npmrc your-project/
+
 # Make hooks and scripts executable
 chmod +x your-project/.claude/hooks/*.sh
 chmod +x your-project/.claude/scripts/*.sh
 chmod +x your-project/scripts/*.sh
+chmod +x your-project/.githooks/pre-commit
+
+# Enable the secret-scanning pre-commit hook (optional)
+git -C your-project config core.hooksPath .githooks
 ```
 
 ### A La Carte
@@ -191,6 +237,42 @@ npm i -g @google/gemini-cli
 # Follow OpenAI's Codex CLI installation instructions
 ```
 
+### 4. Reviewer Providers — Groq / Cerebras / Ollama (Optional)
+
+`reviewer-with-fallback.sh` runs advisory/investigation review seats through a
+cheap-to-free provider chain before falling back to Gemini:
+
+```bash
+export GROQ_API_KEY=...        # console.groq.com  (primary, large context)
+export CEREBRAS_API_KEY=...    # cloud.cerebras.ai (free-tier failover)
+export OLLAMA_MODEL=qwen3-coder  # optional local model (if `ollama` is installed)
+export GEMINI_API_KEY=...      # final fallback (also used by gemini-with-fallback.sh)
+```
+
+Chain: **Groq → Cerebras → Ollama → Gemini**. Security and design-vote seats are
+forbidden here and must use the pro-only `gemini-with-fallback.sh` chain (the
+script enforces this with exit code 64).
+
+### 5. Security Layer — gitleaks (Optional)
+
+Enable opt-in secret scanning on every commit:
+
+```bash
+brew install gitleaks                      # or see gitleaks' README
+git config core.hooksPath .githooks        # one-time, per clone
+```
+
+See [SECURITY.md](SECURITY.md) and [.githooks/README.md](.githooks/README.md).
+
+### 6. Token Optimization — RTK (Optional)
+
+Routine `git`/`grep`/`read` shell traffic can dominate token spend. **RTK
+("Rust Token Killer")** is an optional, separate CLI proxy that returns the same
+output in a far more token-dense form — ~70% savings on covered operations in
+real use. It is **not bundled**; this template only documents how to slot it in.
+
+See [docs/token-optimization.md](docs/token-optimization.md).
+
 ## How the Pieces Compose
 
 ```
@@ -238,9 +320,12 @@ npm i -g @google/gemini-cli
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Optional | orchestrate-investigation, orchestrate-review-deploy, pr-review-bot |
 | [Codex CLI](https://github.com/openai/codex) | Optional | orchestrate-investigation, orchestrate-review-deploy, pr-review-bot |
 | [gstack](https://github.com/garrytan/gstack) | Optional | Browse/QA verification step |
-| [`gh`](https://cli.github.com/) | Optional | pr-bot, hooks, pr-review-bot script |
-| `jq` | Optional | pre-merge-gate hook, pr-review-bot script |
+| [`gh`](https://cli.github.com/) | Optional | pr-bot, hooks, pr-review-bot script, worktree cleanup |
+| `jq` | Optional | pre-merge-gate hook, pr-review-bot script, reviewer plumbing |
 | `make` | Optional | pre-merge-gate hook (expects `make pre-merge` target) |
+| [gitleaks](https://github.com/gitleaks/gitleaks) | Optional | Secret-scanning layer (`.githooks/pre-commit`, `.gitleaks.toml`) |
+| [Groq](https://console.groq.com/) / [Cerebras](https://cloud.cerebras.ai/) / [Ollama](https://ollama.com/) | Optional | Fast/free reviewer providers for `reviewer-with-fallback.sh` |
+| RTK | Optional | Token-optimization proxy — see [docs/token-optimization.md](docs/token-optimization.md) |
 
 ## Customization
 
@@ -265,7 +350,13 @@ This pipeline builds on work from several open-source projects:
 - **gemini-cli** skill — originally from [forayconsulting/gemini_cli_skill](https://github.com/forayconsulting/gemini_cli_skill)
 - **codex** skill — originally from [skills-directory/skill-codex](https://github.com/skills-directory/skill-codex)
 
-The orchestration skills (`orchestrate-investigation`, `orchestrate-review-deploy`), hooks, PR review bot, and the multi-agent pipeline that ties everything together were developed independently.
+Optional integrations referenced by this template (none bundled):
+
+- **RTK ("Rust Token Killer")** — optional token-optimization CLI proxy; credit to its author. See [docs/token-optimization.md](docs/token-optimization.md).
+- **[Groq](https://console.groq.com/), [Cerebras](https://cloud.cerebras.ai/), and [Ollama](https://ollama.com/)** — optional reviewer providers powering the fast/free tiers of `reviewer-with-fallback.sh`.
+- **[gitleaks](https://github.com/gitleaks/gitleaks)** — powers the opt-in secret-scanning layer.
+
+The orchestration skills (`orchestrate-investigation`, `orchestrate-review-deploy`), agents, hooks, reviewer plumbing, security layer, PR review bot, and the multi-agent pipeline that ties everything together were developed independently.
 
 ## License
 

@@ -1,6 +1,9 @@
 # GEMINI.md — [Your Project Name]
 
 <!-- Copy this to .gemini/GEMINI.md in your project root. Gemini CLI reads it automatically. -->
+<!-- The disciplines below are tool-agnostic; they mirror CLAUDE.md.template so both
+     assistants follow the same rules. (Claude-Code-only commands like /vdd, /qa,
+     /orchestrate-* are intentionally omitted — Gemini CLI doesn't have them.) -->
 
 ## Project Overview
 
@@ -10,9 +13,13 @@
 
 | Module | Path | Purpose |
 |--------|------|---------|
-| **Backend** | `src/` | API, services, data layer |
-| **Frontend** | `frontend/` | UI components |
+| **Backend** | `backend/` | API, auth, data layer |
+| **Frontend** | `frontend/` | UI components, state |
 | **Shared** | `shared/` | Common utilities |
+
+**NEVER `git add -A` — ALWAYS add specific files.**
+
+**BEFORE ANY EDITS: Run `git branch --show-current && pwd`. If on `main`, STOP and create a feature branch or worktree first.**
 
 ## Code Standards
 
@@ -22,7 +29,42 @@
 | **DRY** | 3+ identical blocks → extract to function |
 | **Types** | Annotations required, proper None handling |
 | **Files** | <500 lines per file |
-| **Security** | No secrets in logs |
+| **Security** | No secrets in logs, no secrets in code |
+| **YAGNI / Scope gate** | Before building: stdlib/native → already-installed dep → **no unrequested abstraction**. Challenge an over-broad ask *before* writing, not in review. |
+| **Mark shortcuts** | Every deliberate shortcut gets a greppable marker naming its exit path: `# SHORTCUT: <ceiling> — <upgrade path>`. |
+
+## Workflow Discipline
+
+| Phase | Gate | Action |
+|-------|------|--------|
+| **Feature Design** | Assumptions explicit | List assumptions → read specs for blocking ones → verify before designing |
+| **Bug Fix** | Reproduce first | 5-Whys → logging → "$100 bet on root cause?" |
+| **Post-Change** | Prove it works | Run tests + a real smoke check → confirm symptom gone → THEN hand off |
+| **Session Scope** | One objective | Investigation OR Implementation OR Deploy (not all at once) |
+
+## Evidence Discipline
+
+Hard-won rules for not shipping false "it works" — each prevents a specific way verification lies:
+
+- **Read the exit status, not buffered output.** Never pipe a long verification through `| tail` / `| head` / `2>/dev/null` — the pipe returns the *filter's* exit code, not the command's, so the "pass" is meaningless. Redirect to a file and check `$?`.
+- **Probe the real path.** An ad-hoc probe (grep, shell loop, hand-fed input) must read the *same field/input the code consumes*. A probe that inspects a different field than the code does manufactures confident, wrong conclusions — worse than no probe.
+- **Test hygiene can hide the prod bug.** A test that sets a convenient env var or auto-stubs a service can reroute around the exact broken default. Run at least one verification with the var *unset* / against real defaults before claiming "fixed."
+- **Separate "implementable" from "correctly diagnosed."** When you state a $100 confidence wager, bet on the *root cause / right layer* separately from "can be built" — and name the specific evidence that would move a "not yet" to "yes."
+- **Bigger ≠ better.** A larger "root-cause" fix gated behind an unrun migration/backfill delivers zero value now while carrying full risk. Weigh value-vs-risk, not just correctness.
+
+## Local Dev Verification (MANDATORY)
+
+**Never hand off without proving it works.** Layered verification:
+
+1. **Tests**: run the test suite for affected modules (catches logic regressions)
+2. **Smoke**: exercise the affected path for real (curl an endpoint, run the CLI, render the page)
+3. **Real defaults**: verify at least once without test-convenience overrides (see Evidence Discipline)
+
+## Security
+
+- Never commit `.env` files
+- Run `gitleaks detect --config .gitleaks.toml --no-banner` before merging (see SECURITY.md)
+- **Escape hatches** (use sparingly): `SKIP_SECURITY=true make pre-merge` bypasses the Makefile `security` target; the opt-in pre-commit hook has its **own** vars — `SKIP_SECRET_SCAN` / `SKIP_MIGRATION_CHECK` / `SKIP_HOOKS`. They are different layers.
 
 ## Key Commands
 

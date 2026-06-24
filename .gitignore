@@ -3,6 +3,22 @@
 .env.local
 .env.*.local
 
+# Credentials / private keys — never commit these to a repo (esp. a public one).
+# A leaked private key or service-account JSON is far more dangerous than a
+# public Firebase web key. Un-ignore a specific file with `!path` if truly needed.
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+id_rsa
+id_ed25519
+*-key.json
+serviceAccount*.json
+service-account*.json
+gha-creds-*.json
+credentials.json
+
 # OS
 .DS_Store
 Thumbs.db
@@ -16,6 +32,12 @@ Thumbs.db
 
 # Claude Code local settings (contains user-specific allowed commands with absolute paths)
 .claude/settings.local.json
+
+# Claude Code runtime logs (post-merge-cleanup, etc.)
+.claude/logs/
+
+# Git worktrees (created by the orchestrate-* / worktree workflow)
+.worktrees/
 
 # Temp
 /tmp/

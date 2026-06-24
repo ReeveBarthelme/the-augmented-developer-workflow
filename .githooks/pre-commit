@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# pre-commit — generic, opt-in git hook for this template.
+#
+# ENABLE (one-time per clone):
+#   git config core.hooksPath .githooks
+#
+# Provides two independent, individually-bypassable guards:
+#   1. Secret scan      — `gitleaks protect --staged` on the staged diff
+#                         (skipped silently if gitleaks is not installed).
+#   2. Migration guard  — blocks a new numbered migration file whose numeric
+#                         prefix already exists on origin/main (prefix collision).
+#                         OFF by default; enable by setting MIGRATIONS_DIR below.
+#
+# BYPASS (use sparingly, with a reason):
+#   SKIP_SECRET_SCAN=1     git commit ...   # skip guard 1
+#   SKIP_MIGRATION_CHECK=1 git commit ...   # skip guard 2
+#   SKIP_HOOKS=1           git commit ...   # skip everything
+#
+# See .githooks/README.md for details.
+
+set -uo pipefail
+
+# Honor a global bypass.
+case "${SKIP_HOOKS:-}" in
+  1|true|yes) exit 0 ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Customize: directory holding numbered migration files (e.g. "001_init.sql").
+# Leave empty to disable the migration-collision guard entirely.
+# ---------------------------------------------------------------------------
+MIGRATIONS_DIR=""
+
+fail=0
+
+# ---------------------------------------------------------------------------
+# Guard 1 — staged secret scan via gitleaks (no-op if gitleaks absent).
+# ---------------------------------------------------------------------------
+case "${SKIP_SECRET_SCAN:-}" in
+  1|true|yes)
+    echo "pre-commit: secret scan skipped (SKIP_SECRET_SCAN set)" >&2
+    ;;
+  *)
+    if command -v gitleaks >/dev/null 2>&1; then
+      config_args=()
+      [ -f .gitleaks.toml ] && config_args=(--config .gitleaks.toml)
+      # Safe empty-array expansion (macOS bash 3.2 aborts on "${arr[@]}" under set -u)
+      if ! gitleaks protect --staged --redact --no-banner "${config_args[@]+"${config_args[@]}"}"; then
+        echo "" >&2
+        echo "❌ pre-commit: gitleaks detected a potential secret in the staged diff." >&2
+        echo "   Remove it, or allowlist a confirmed false positive in .gitleaks.toml." >&2
+        echo "   Bypass (only if you are certain): SKIP_SECRET_SCAN=1 git commit ..." >&2
+        fail=1
+      fi
+    else
+      # Do NOT fail silently: an adopter who enabled this hook expects secret
+      # scanning. Warn loudly that it is disabled so the gap is visible.
+      echo "⚠️  pre-commit: gitleaks not installed — secret scan SKIPPED (commit NOT scanned)." >&2
+      echo "    Install it to enable scanning: brew install gitleaks" >&2
+    fi
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Guard 2 — migration prefix-collision check vs origin/main.
+# ---------------------------------------------------------------------------
+case "${SKIP_MIGRATION_CHECK:-}" in
+  1|true|yes)
+    [ -n "$MIGRATIONS_DIR" ] && echo "pre-commit: migration check skipped (SKIP_MIGRATION_CHECK set)" >&2
+    ;;
+  *)
+    if [ -n "$MIGRATIONS_DIR" ] && [ -d "$MIGRATIONS_DIR" ]; then
+      # Newly-added migration files in this commit.
+      new_files=$(git diff --cached --name-only --diff-filter=A -- "$MIGRATIONS_DIR" 2>/dev/null || true)
+      if [ -n "$new_files" ]; then
+        # Numeric prefixes already present on origin/main.
+        existing_prefixes=$(git ls-tree -r --name-only origin/main -- "$MIGRATIONS_DIR" 2>/dev/null \
+          | sed -n 's#.*/\([0-9]\{1,\}\)[_-].*#\1#p' | sort -u || true)
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          prefix=$(basename "$f" | sed -n 's#^\([0-9]\{1,\}\)[_-].*#\1#p')
+          [ -n "$prefix" ] || continue
+          if printf '%s\n' "$existing_prefixes" | grep -qx "$prefix"; then
+            echo "❌ pre-commit: migration prefix '$prefix' ($f) already exists on origin/main." >&2
+            echo "   Renumber this migration to avoid a collision." >&2
+            echo "   Bypass: SKIP_MIGRATION_CHECK=1 git commit ..." >&2
+            fail=1
+          fi
+        done <<< "$new_files"
+      fi
+    fi
+    ;;
+esac
+
+exit "$fail"

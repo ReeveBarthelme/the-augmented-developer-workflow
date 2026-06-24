@@ -14,21 +14,26 @@ concurrency:
 jobs:
   review:
     name: Multi-Agent Review
-    # Customize: use 'self-hosted' if you have a runner with claude/gemini/codex CLIs installed
-    # Or use 'ubuntu-latest' and install the CLIs in a setup step
-    runs-on: self-hosted
+    # Opt-in: this job is SKIPPED unless you set repo variable ENABLE_AI_REVIEW=true.
+    # That avoids a forever-pending check on repos that haven't provisioned a runner.
+    # Runner: defaults to ubuntu-latest; point AI_REVIEW_RUNNER at a self-hosted
+    # runner (one with the claude/gemini/codex CLIs) if you have one. On ubuntu-latest
+    # you must install the CLIs in a setup step. Requires the *_API_KEY secrets too.
+    runs-on: ${{ vars.AI_REVIEW_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
 
-    # Run on PR events (skip drafts, bots, skip-label) OR @review comments on PRs
+    # Gated on ENABLE_AI_REVIEW, then: PR events (skip drafts, bots, skip-label)
+    # OR @review comments on PRs
     if: |
-      (github.event_name == 'pull_request' &&
+      vars.ENABLE_AI_REVIEW == 'true' &&
+      ((github.event_name == 'pull_request' &&
        !github.event.pull_request.draft &&
        github.actor != 'dependabot[bot]' &&
        !contains(github.event.pull_request.labels.*.name, 'skip-ai-review')) ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request &&
        contains(github.event.comment.body, '@review') &&
-       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)))
 
     steps:
       - name: Checkout code

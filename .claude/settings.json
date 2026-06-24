@@ -1,4 +1,17 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(git show:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(rg:*)",
+      "Bash(grep:*)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -23,7 +36,34 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/post-merge-cleanup.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/post-tool-use-tracker.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/post-edit-lint.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session-start-status.sh",
             "timeout": 5
           }
         ]

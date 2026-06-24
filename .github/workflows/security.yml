@@ -1,0 +1,303 @@
+name: Security Scanning
+
+# Generic supply-chain / SAST security workflow.
+# Catches malicious or vulnerable Python (pip-audit) and npm (npm audit)
+# dependencies, leaked secrets (gitleaks), insecure Python code (bandit), and
+# emits an SBOM (syft) for supply-chain provenance.
+#
+# CUSTOMIZE before use — search this file for "# Customize:" and adjust:
+#   - requirements file paths (Python)
+#   - frontend directory / package-lock.json path (npm)
+#   - source directories to SAST-scan (bandit)
+# Remove any job (python-*, npm-audit, sbom-generation) your project doesn't need.
+
+on:
+  # Weekly schedule + main push only (not every PR) to conserve free CI minutes.
+  # If you also run bandit/eslint in your per-PR CI, keep this off the PR path.
+  push:
+    branches: [main]
+  schedule:
+    # Weekly on Monday at 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+# Cancel in-progress runs when a new push arrives
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+# Customize: these pin the interpreter that RUNS the scanners (pip-audit, bandit,
+# npm audit) — they do NOT have to match your app's runtime. pip-audit reads
+# requirements.txt against the OSV DB and bandit parses source, so neither needs
+# your project's exact Python; npm audit reads the lockfile. Pinning keeps CI
+# reproducible (vs. drifting with the runner default). Bump as new stable/LTS ship.
+env:
+  PYTHON_VERSION: "3.13"
+  NODE_VERSION: "22"
+
+permissions:
+  contents: read
+
+jobs:
+  # ============================================================================
+  # PYTHON DEPENDENCY CVE SCANNING (pip-audit)
+  # Uses the OSV database. Drop this job if your project has no Python.
+  # ============================================================================
+  python-dependencies:
+    name: Python CVE Scan (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          # Customize: add `cache: "pip"` once you have a requirements/pyproject
+          # file at a path setup-python can find. Enabling it with no dependency
+          # file present hard-fails this step before any scan runs.
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+
+      - name: Run pip-audit CVE scan
+        run: |
+          echo "## Python Dependency CVE Scan (pip-audit)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          # Customize: point at your requirements file(s). For multiple files,
+          # repeat -r. To accept a specific reviewed CVE, append:
+          #   --ignore-vuln CVE-XXXX-NNNNN   (document WHY in a comment here)
+          pip-audit -r requirements.txt \
+            --format json -o pip-audit-report.json || EXIT_CODE=$?
+          pip-audit -r requirements.txt \
+            >> $GITHUB_STEP_SUMMARY 2>&1 || true
+          if [ "${EXIT_CODE:-0}" -ne 0 ]; then
+            echo "::error::pip-audit found vulnerabilities in Python dependencies"
+            exit 1
+          fi
+          echo "No vulnerabilities found in Python dependencies" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload pip-audit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pip-audit-cve-report
+          path: pip-audit-report.json
+
+  # ============================================================================
+  # NPM AUDIT (Frontend / Node Dependencies)
+  # Drop this job if your project has no npm packages.
+  # ============================================================================
+  npm-audit:
+    name: NPM Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          # Customize: once you have a lockfile, enable caching by adding:
+          #   cache: "npm"
+          #   cache-dependency-path: frontend/package-lock.json
+          # Enabling it with no matching lockfile hard-fails this step.
+
+      - name: Run npm audit
+        # Customize: directory containing package.json (use "." if at repo root)
+        working-directory: frontend
+        run: |
+          echo "## NPM Dependency Audit" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          npm audit --audit-level=high --json > npm-audit-report.json || EXIT_CODE=$?
+          npm audit --audit-level=high >> $GITHUB_STEP_SUMMARY 2>&1 || true
+          if [ "${EXIT_CODE:-0}" -ne 0 ]; then
+            echo "::error::npm audit found high or critical vulnerabilities"
+            exit 1
+          fi
+          echo "No high/critical vulnerabilities found in npm dependencies" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload npm audit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: npm-audit-report
+          # Customize: match working-directory above
+          path: frontend/npm-audit-report.json
+
+  # ============================================================================
+  # SECRET DETECTION (GitLeaks)
+  # Uses the .gitleaks.toml shipped in this template.
+  # ============================================================================
+  secret-detection:
+    name: Secret Detection (GitLeaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        # NOTE: gitleaks-action v2 is free for personal accounts and PUBLIC repos.
+        # ORGANIZATION-owned repos require a (free) GITLEAKS_LICENSE — add it as a
+        # repo/org secret and pass `GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}`
+        # below, or this job will fail. See github.com/gitleaks/gitleaks-action.
+        # (The local .githooks/pre-commit secret scan has no such requirement.)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_SUMMARY: true
+
+      - name: Gitleaks Summary
+        if: always()
+        run: |
+          echo "## Secret Detection (GitLeaks)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "GitLeaks scan completed. Check action output for details." >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # PYTHON SAST (Bandit) — drop if your project has no Python.
+  # ============================================================================
+  python-sast:
+    name: Python SAST (Bandit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          # Customize: add `cache: "pip"` once you have a requirements/pyproject
+          # file at a path setup-python can find. Enabling it with no dependency
+          # file present hard-fails this step before any scan runs.
+
+      - name: Install Bandit
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit[toml]
+
+      - name: Run Bandit SAST scan
+        run: |
+          echo "## Python SAST Scan (Bandit)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          # Customize: replace "src/" with your Python source dir(s).
+          # -ll = report medium+ severity. Reads [tool.bandit] from pyproject.toml.
+          bandit -r src/ -ll -c pyproject.toml -f json -o bandit-report.json || EXIT_CODE=$?
+          bandit -r src/ -ll -c pyproject.toml -f txt >> $GITHUB_STEP_SUMMARY || true
+          if [ "${EXIT_CODE:-0}" -ne 0 ]; then
+            echo "::error::Bandit found security issues in Python code"
+            exit 1
+          fi
+          echo "No security issues found by Bandit" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-sast-report
+          path: bandit-report.json
+
+  # ============================================================================
+  # SBOM GENERATION (Software Bill of Materials, CycloneDX via Syft)
+  # Informational (non-blocking) — supports supply-chain provenance / compliance.
+  # ============================================================================
+  sbom-generation:
+    name: SBOM Generation (Syft)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Use Anchore's official, version-pinned action instead of piping a remote
+      # installer into a shell (`curl … | sh` from `main` runs unreviewed code).
+      # `@v0` tracks Anchore's maintained stable line; for stricter supply-chain
+      # control, pin to a full commit SHA.
+      - name: Generate SBOM (CycloneDX via Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.json
+          upload-artifact: false
+
+      - name: SBOM summary
+        run: |
+          echo "## SBOM Generation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          COMPONENTS=$(jq '.components | length' sbom.json 2>/dev/null || echo "unknown")
+          echo "SBOM generated (CycloneDX format): $COMPONENTS components" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.json
+          retention-days: 90
+
+  # ============================================================================
+  # SECURITY SUMMARY (Final Gate)
+  # SBOM is informational and intentionally NOT required to pass.
+  # ============================================================================
+  security-summary:
+    name: Security Summary
+    needs:
+      [
+        python-dependencies,
+        npm-audit,
+        secret-detection,
+        python-sast,
+        sbom-generation,
+      ]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Check security scan results
+        run: |
+          echo "## Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Python CVE Scan (pip-audit) | ${{ needs.python-dependencies.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| NPM Audit | ${{ needs.npm-audit.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Secret Detection (GitLeaks) | ${{ needs.secret-detection.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Python SAST (Bandit) | ${{ needs.python-sast.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SBOM Generation | ${{ needs.sbom-generation.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail if any security check failed
+        # SBOM generation is informational, not blocking.
+        if: |
+          needs.python-dependencies.result == 'failure' ||
+          needs.npm-audit.result == 'failure' ||
+          needs.secret-detection.result == 'failure' ||
+          needs.python-sast.result == 'failure'
+        run: |
+          echo "::error::One or more security checks failed. See summary above."
+          exit 1
+
+      - name: Security checks passed
+        if: |
+          needs.python-dependencies.result == 'success' &&
+          needs.npm-audit.result == 'success' &&
+          needs.secret-detection.result == 'success' &&
+          needs.python-sast.result == 'success'
+        run: |
+          echo "All security checks passed!" >> $GITHUB_STEP_SUMMARY

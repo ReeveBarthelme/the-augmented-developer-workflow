@@ -23,15 +23,22 @@ test:
 	# TypeScript: npm test
 	# Go: go test ./...
 
-# Customize: your security scanning
+# Local mirror of .github/workflows/security.yml — runs the same scanners before
+# merge so you catch bad/vulnerable deps and leaked secrets locally.
+# Each tool is invoked only if installed, so this target degrades gracefully —
+# but a tool that RUNS and finds a problem must FAIL the gate. The if/then/else
+# form below is deliberate: `tool && ok || echo` would swallow a real finding
+# (the tool's non-zero exit) and let the merge through. Do not "simplify" it.
+# Customize: requirements.txt / src/ / pyproject.toml paths to match your project.
+# Escape hatch for rapid iteration: SKIP_SECURITY=true make pre-merge
 security:
 	@echo "Running security checks..."
-	# gitleaks detect --source . --no-banner
-	# Python: pip-audit && bandit -r src/
-	# Node: npm audit --audit-level=high
-	# SKIP_SECURITY=true make pre-merge  (escape hatch for rapid iteration)
 ifdef SKIP_SECURITY
 	@echo "Security checks SKIPPED (SKIP_SECURITY=$(SKIP_SECURITY))"
 else
-	@echo "No security tools configured — add your checks above"
+	@if command -v gitleaks  >/dev/null 2>&1; then gitleaks detect --source . --config .gitleaks.toml --no-banner; else echo "  (gitleaks not installed — skipping secret scan)"; fi
+	@if command -v pip-audit >/dev/null 2>&1; then pip-audit -r requirements.txt; else echo "  (pip-audit not installed — skipping Python CVE scan)"; fi
+	@if command -v bandit    >/dev/null 2>&1; then bandit -r src/ -ll -c pyproject.toml; else echo "  (bandit not installed — skipping Python SAST)"; fi
+	@if [ -f package.json ]; then npm audit --audit-level=high; else echo "  (no package.json — skipping npm audit)"; fi
+	@echo "Security checks complete."
 endif

@@ -10,9 +10,15 @@ set -u
 
 # Read tool input from stdin (Claude Code passes JSON via stdin, NOT env vars)
 INPUT=$(cat)
+
+# Fast path: skip jq for the vast majority of Bash calls that aren't pr-create.
+if ! printf '%s\n' "$INPUT" | grep -qE 'gh\s+pr\s+create(\s|"|$)'; then
+    exit 0
+fi
+
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || echo "")
 
-# Only trigger after "gh pr create" — word boundary prevents matching hypothetical subcommands
+# Re-check the parsed command — word boundary prevents matching hypothetical subcommands
 if ! echo "$COMMAND" | grep -qE 'gh\s+pr\s+create(\s|$)'; then
     exit 0
 fi
@@ -32,7 +38,7 @@ fi
 # Fully detach: redirect all FDs so the hook runner doesn't wait on child streams.
 # Move gh pr list inside the background process to avoid 10s timeout on network calls.
 (
-    cd "$REPO_ROOT"
+    cd "$REPO_ROOT" || exit 0
 
     # Brief pause for GitHub API eventual consistency after PR creation
     sleep 3
