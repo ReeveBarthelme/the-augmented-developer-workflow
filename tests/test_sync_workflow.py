@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -152,6 +153,8 @@ class SyncWorkflowTests(unittest.TestCase):
                 __import__("shutil").rmtree(bad)
             bad.mkdir()
             self.git(bad, "init", "-q")
+            self.git(bad, "config", "user.email", "test@example.com")
+            self.git(bad, "config", "user.name", "Test")
             (bad / "bundle").mkdir()
             (bad / "bundle/manifest.json").write_text(json.dumps({"schema": 1, "version": "1", "files": [unsafe]}))
             self.git(bad, "add", "bundle")
