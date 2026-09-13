@@ -6,7 +6,7 @@ The shared bundle defines investigation, testing, verification, independent revi
 
 ## Maintainer installation
 
-Use Python 3.10 or newer and Git. Clone this repository separately for maintenance, then choose a reviewed full commit ID:
+Use Python 3.10 or newer and Git on a filesystem that preserves executable bits. For WSL2, clone inside the Linux filesystem. Bundle paths use portable ASCII names; file contents may contain Unicode. Clone this repository separately for maintenance, then choose a reviewed full commit ID:
 
 ```sh
 python3 scripts/sync-workflow.py --source "$PWD" --ref <full-40-character-commit> --target /path/to/consumer
@@ -36,6 +36,6 @@ Keep project-specific instructions outside `.workflow/vendor`. The installer doe
 
 ## Acceptance and limits
 
-Run `python3 -m unittest discover -s tests -v` for installer and capability checks. Consumer CI must verify the lock and its application behavior. Checksums detect drift; they are not a signature or a substitute for reviewing the pinned source.
+Run `python3 -m unittest discover -s tests -v` for installer and capability checks. Consumer CI must verify the lock and its application behavior. Checksums detect drift; they are not a signature or a substitute for reviewing the pinned source. The installer accepts local commits for testing and does not prove remote reachability. Before publishing a consumer PR, push the upstream commit and record its repository and PR in project documentation.
 
 A complete onboarding pilot still needs a fresh account on each supported host, real client sign-in, a failing test followed by a fix, passing project checks, browser evidence, independent review and a draft PR. Linux CI does not establish Windows or macOS client behavior. Production access is a separate project decision.

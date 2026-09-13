@@ -18,3 +18,5 @@ Use the project command contract for setup, verification and browser checks. Avo
 ## Updating this bundle
 
 Files under `.workflow/vendor` are managed snapshots. Do not edit them directly. Make a generic change upstream, test it, pin its exact commit with the upstream sync command, and review the resulting consumer diff. Project-specific changes belong outside the vendor directory. A consumer clone does not need an upstream checkout for everyday work or offline integrity checks.
+
+Maintainers run `python3 scripts/sync-workflow.py --source /path/to/upstream --ref <full-commit> --target /path/to/consumer` from the upstream checkout. The committed `bundle/manifest.json` lists payload files. Commit the imported `.workflow/vendor` directory and `.workflow/lock.json` in the consumer. The bundled `.gitattributes` preserves payload bytes across clone line-ending settings. Use a filesystem that preserves executable bits; on WSL, keep the clone in the Linux filesystem.

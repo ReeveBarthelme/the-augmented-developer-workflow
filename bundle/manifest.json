@@ -8,6 +8,7 @@
     "doctor.py",
     "hooks/check-integrity.sh",
     "sync.py",
-    "__init__.py"
+    "__init__.py",
+    ".gitattributes"
   ]
 }

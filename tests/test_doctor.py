@@ -28,7 +28,9 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(results[0]['authentication'], 'not checked')
 
     def test_rejects_unsafe_configuration(self):
-        for config in ({'schema': 2}, {'schema': 1, 'required_files': ['../secret']},
+        for config in ({'schema': 2}, {'schema': True}, {'schema': 1.0},
+                       {'schema': 1, 'required_files': ['.GIT/config']},
+                       {'schema': 1, 'required_files': ['bad\x1bname']}, {'schema': 1, 'required_files': ['../secret']},
                        {'schema': 1, 'required_tools': ['sh -c evil']},
                        {'schema': 1, 'required_tools': 'git'}):
             with self.subTest(config=config), self.assertRaises(ValueError):

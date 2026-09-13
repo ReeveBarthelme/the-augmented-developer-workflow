@@ -177,6 +177,27 @@ class TestSyncSecurity(unittest.TestCase):
         with self.assertRaisesRegex(module.SyncError, "incomplete workflow update"):
             module.check(self.target)
 
+    def test_consumer_clone_preserves_payload_with_autocrlf_enabled(self):
+        self.install({".gitattributes": "* -text\n", "guide.md": "line one\nline two\n"})
+        self.git(self.target, "add", ".workflow")
+        self.git(self.target, "commit", "-qm", "vendor")
+        clone = self.base / "consumer-clone"
+        self.git(self.base, "-c", "core.autocrlf=true", "clone", "-q", str(self.target), str(clone))
+        result = self.run_cli("--check", "--target", clone)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((clone / ".workflow/vendor/guide.md").read_bytes(), b"line one\nline two\n")
+
+    def test_unsupported_mode_filesystem_fails_before_publication(self):
+        self.install({"guide.md": "old"})
+        locked = (self.target / ".workflow/lock.json").read_bytes()
+        changed = self.commit_bundle({"guide.md": "new"}, manifest_mode=0o755)
+        module = self.load_sync()
+        with patch.object(Path, "chmod"):
+            with self.assertRaisesRegex(module.SyncError, "filesystem"):
+                module.sync(self.source, changed, self.target)
+        self.assertEqual((self.target / ".workflow/lock.json").read_bytes(), locked)
+        module.check(self.target)
+
 
 if __name__ == "__main__":
     unittest.main()

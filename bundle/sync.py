@@ -18,7 +18,7 @@ class SyncError(Exception):
 
 
 def git(repo, *args):
-    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=False)
+    result = subprocess.run(["git", "--literal-pathspecs", "-C", str(repo), *args], capture_output=True, check=False)
     if result.returncode:
         raise SyncError(result.stderr.decode(errors="replace").strip() or "git command failed")
     return result.stdout
@@ -33,7 +33,7 @@ def repo_root(path):
 
 
 def safe_rel(value):
-    if not isinstance(value, str) or not value or re.search(r'[\\:\x00-\x1f]', value):
+    if not isinstance(value, str) or not value or not value.isascii() or re.search(r'[\\:\x00-\x1f]', value):
         raise SyncError(f"invalid bundle path: {value!r}")
     parts = value.split("/")
     if any(part in ("", ".", "..") or part.casefold() == ".git" for part in parts):
@@ -93,7 +93,7 @@ def committed_file(source, ref, path):
     mode, kind, _object = metadata.split()
     if actual.decode() != name or kind != b"blob" or mode not in (b"100644", b"100755"):
         raise SyncError(f"bundle path must be a regular file: {path}")
-    return git(source, "show", f"{ref}:{name}"), mode == b"100755"
+    return git(source, "cat-file", "blob", _object.decode("ascii")), mode == b"100755"
 
 
 def source_payload(source, ref):
@@ -191,6 +191,8 @@ def sync(source, ref, target):
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
             dest.chmod(0o755 if executable else 0o644)
+            if bool(dest.stat().st_mode & 0o111) != executable:
+                raise SyncError("filesystem does not preserve executable modes; use a native Linux/macOS filesystem")
         (stage / "lock.json").write_text(json.dumps(lock_data(ref, manifest, payload), indent=2, sort_keys=True) + "\n")
         marker = workflow / ".sync-incomplete"
         # Exclusive creation serializes updates. Any failed/interrupted publication leaves a visible blocker.

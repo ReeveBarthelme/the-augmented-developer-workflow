@@ -1,0 +1,2 @@
+# Preserve exact committed payload bytes across consumer clone settings.
+* -text

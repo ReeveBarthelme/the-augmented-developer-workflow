@@ -9,7 +9,7 @@ import sys
 
 
 def validate(config):
-    if not isinstance(config, dict) or config.get('schema') != 1:
+    if not isinstance(config, dict) or type(config.get('schema')) is not int or config['schema'] != 1:
         raise ValueError('project configuration must use schema 1')
     for key in ('required_tools', 'optional_tools', 'required_files'):
         values = config.get(key, [])
@@ -19,8 +19,8 @@ def validate(config):
             if key.endswith('tools'):
                 if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', value):
                     raise ValueError(f'invalid executable name: {value}')
-            elif not value or '\\' in value or ':' in value or any(
-                part in ('', '.', '..', '.git') for part in value.split('/')
+            elif not value or not value.isascii() or re.search(r'[\\:\x00-\x1f]', value) or any(
+                part in ('', '.', '..') or part.casefold() == '.git' for part in value.split('/')
             ):
                 raise ValueError(f'invalid project path: {value}')
 
