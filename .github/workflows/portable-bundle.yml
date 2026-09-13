@@ -1,0 +1,33 @@
+name: Portable workflow bundle
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  contracts:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python -m unittest discover -s tests -v
+      - name: Install the committed bundle into an empty consumer
+        shell: bash
+        run: |
+          consumer="$RUNNER_TEMP/workflow-consumer"
+          git init "$consumer"
+          python scripts/sync-workflow.py --source . --ref "$(git rev-parse HEAD)" --target "$consumer"
+          python "$consumer/.workflow/vendor/sync.py" --check --source "$PWD" --target "$consumer"
+          printf '\ndrift\n' >> "$consumer/.workflow/vendor/WORKFLOW.md"
+          if python "$consumer/.workflow/vendor/sync.py" --check --target "$consumer"; then
+            echo 'Drift was not detected'
+            exit 1
+          fi

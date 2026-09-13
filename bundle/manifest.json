@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "version": "1.0.0",
+  "files": [
+    "WORKFLOW.md",
+    "adapters/claude.md",
+    "adapters/codex.md",
+    "doctor.py",
+    "hooks/check-integrity.sh",
+    "sync.py",
+    "__init__.py"
+  ]
+}

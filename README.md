@@ -1,3 +1,5 @@
+> For new portable Claude Code and Codex installations, start with [the pinned workflow bundle](PORTABLE-WORKFLOW.md). The legacy templates below are retained for existing users.
+
 # The Augmented Developer Workflow
 
 A battle-tested collection of Claude Code skills, commands, agents, and hooks that power a multi-agent AI-augmented development pipeline.

@@ -1,3 +1,5 @@
+> For new portable Claude Code and Codex installations, start with [the pinned workflow bundle](PORTABLE-WORKFLOW.md). The legacy templates below are retained for existing users.
+
 # Installation Guide
 
 ## Prerequisites
