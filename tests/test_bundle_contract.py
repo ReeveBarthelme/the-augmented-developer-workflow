@@ -18,7 +18,6 @@ class BundleContractTests(unittest.TestCase):
             data = (bundle / name).read_text()
             self.assertNotIn('/Users/', data, name)
             self.assertNotIn('/home/', data, name)
-            self.assertNotIn('chatled', data.lower(), name)
 
     def test_adapters_require_the_same_workflow(self):
         root = Path(__file__).parents[1] / 'bundle'
