@@ -36,6 +36,58 @@ chmod +x /path/to/your-project/.githooks/pre-commit
 git -C /path/to/your-project config core.hooksPath .githooks
 ```
 
+### Codex
+
+Codex loads `AGENTS.md` and reads skills from `.agents/skills/`. It cannot see
+`CLAUDE.md`, and **`.claude/settings.json` hooks do not run under it**. The merge
+gate, the push gate and the worktree lease are Claude Code hooks, so a Codex session
+has none of them. What both tools share is the Git hooks (`core.hooksPath .githooks`)
+and the project's own verification commands, so run those yourself.
+
+```bash
+cp AGENTS.md.template /path/to/your-project/AGENTS.md   # then fill in the brackets
+cp -r .agents/ /path/to/your-project/.agents/
+cp -r .codex/  /path/to/your-project/.codex/
+cp /path/to/your-project/.codex/environments/environment.toml.example \
+   /path/to/your-project/.codex/environments/environment.toml
+```
+
+`.agents/skills/` is a byte copy of `.claude/skills/`, not a symlink, so the two
+drift. `scripts/check-agents-skills-mirror.sh` exits 1 when they have; `make
+pre-merge` runs it. Re-sync with:
+
+```bash
+rm -rf .agents/skills && mkdir -p .agents/skills && cp -R .claude/skills/. .agents/skills/
+```
+
+### Local CI (`make pre-merge`)
+
+The `pre-merge-gate.sh` hook blocks `gh pr merge` until `make pre-merge` exits 0, so
+that target is the gate. `Makefile.example` is a working one.
+
+```bash
+cp Makefile.example /path/to/your-project/Makefile
+cp .actrc.example   /path/to/your-project/.actrc
+brew install act shellcheck bats-core actionlint gitleaks jq
+pip install pip-audit "bandit[toml]"
+```
+
+Fill in the CUSTOMIZE block at the top of the Makefile. `ACT_JOBS` is the important
+one: a space-separated list of `workflow.yml:job[:Label]` entries naming the GitHub
+Actions jobs to run locally through act. The job ids come from the workflow YAML, not
+the `name:` strings. An empty `ACT_JOBS` makes `make pre-merge` fail with an
+explanation, because a gate that runs no jobs is worse than no gate.
+
+The workflows must be reachable by `workflow_dispatch` or act's `--detect-event` must
+find a matching trigger. A workflow gated only on `pull_request` will not run locally.
+
+Security scanners behave differently from linters here on purpose. A scanner that is
+**not installed** fails the gate, because a silent skip reports green on a machine
+where nothing ran. Skip the whole set deliberately with `SKIP_SECURITY=true make
+pre-merge`. A configured path that does not exist (no `requirements.txt`, no
+`package.json`) is skipped with a note, since that is a project using a subset rather
+than a broken environment.
+
 ### Merging with Existing `.claude/` Directory
 
 If your project already has a `.claude/` directory:
@@ -93,7 +145,6 @@ Generates tests from a spec with Red Gate enforcement.
 **Files needed:**
 ```
 .claude/commands/tdd.md
-.claude/skills/testing-strategy/SKILL.md
 ```
 
 **Usage:** `/tdd spec.md` — generates tests that must fail first.
@@ -137,7 +188,6 @@ Automatically reviews PRs using multiple AI models.
 ```
 scripts/pr-review-bot.sh
 .github/workflows/pr-review-bot.yml
-.claude/skills/pr-bot/SKILL.md
 .claude/skills/pr-review/SKILL.md
 ```
 
@@ -158,10 +208,17 @@ scripts/pr-review-bot.sh
 .claude/hooks/pre-merge-gate.sh
 .claude/hooks/post-create-check.sh
 .claude/hooks/post-merge-cleanup.sh
-.claude/hooks/post-edit-lint.sh
 .claude/hooks/post-tool-use-tracker.sh
-.claude/hooks/session-start-status.sh
-.claude/hooks/stop-wrap-up-reminder.sh
+.claude/hooks/pr-verification-gate.sh
+.claude/hooks/push-verification-gate.sh
+.claude/hooks/pipe-mask-warn.sh
+.claude/hooks/exec-wait-loop-gate.sh
+.claude/hooks/worktree-lease.sh
+.claude/hooks/context-cost-nudge.sh
+.claude/hooks/delegation-nudge.sh
+.claude/hooks/delegation-track.sh
+.claude/hooks/agent-spawn-capture.sh
+.claude/scripts/delegation-lib.sh     (required by the four hooks above)
 scripts/cleanup-worktrees.sh          (required by post-merge-cleanup.sh)
 .claude/settings.json
 ```
@@ -172,7 +229,9 @@ scripts/cleanup-worktrees.sh          (required by post-merge-cleanup.sh)
 3. Customize file patterns in `post-tool-use-tracker.sh` for your project
 4. Ensure your project has a `make pre-merge` target (or customize `pre-merge-gate.sh`)
 5. `post-merge-cleanup.sh` auto-removes merged worktrees under `.worktrees/` after `gh pr merge`. Test it first with `scripts/cleanup-worktrees.sh --dry-run`.
-6. `post-edit-lint.sh` (PostToolUse `Edit|Write`) auto-fixes lint on save via `ruff`/`eslint` — it no-ops if neither is installed, so it's safe to leave wired. Note it rewrites the file with `--fix`; drop the flag to lint-only if you'd rather it not touch files. `session-start-status.sh` (SessionStart) prints branch + uncommitted status; both are zero-config.
+6. Read `.claude/hooks/README.md` before editing any gate. It carries the PreToolUse decision protocol, and a blocking decision nested under the wrong key exits 0, records success, and lets the tool run anyway.
+7. `exec-wait-loop-gate.sh` does nothing until you set `EXEC_WAIT_LOOP_WRAPPERS` to the command wrappers your project uses. Every other hook is zero-config.
+8. Run `bash .claude/hooks/tests/exec-wait-loop-gate.test.sh` to confirm the gate protocol works in your Claude Code version.
 
 ### Standalone Agents
 
@@ -333,7 +392,7 @@ Common customizations:
 - **Review focus** — Adjust review priorities in pr-review-bot.sh
 - **Pre-merge gates** — Ensure `make pre-merge` exists or customize pre-merge-gate.sh
 - **Migration guard** — Set `MIGRATIONS_DIR` in `.githooks/pre-commit` to enable the prefix-collision check
-- **Test conventions** — Update testing-strategy skill for your language/framework
+- **Test conventions** — Update the agent and command prompts for your language and framework
 
 ## Verification
 
