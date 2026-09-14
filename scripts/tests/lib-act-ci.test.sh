@@ -331,6 +331,159 @@ test_unstamped_lock_expires_by_staleness() {
     rm -rf "$lock"
 }
 
+# Interleave a competing reaper against waiter A, mid-reap.
+#
+# Both tests shadow `warn`, which the reaper calls after deciding a dir is stale and
+# before it removes anything. That is a hook point between decision and removal, and
+# it needs no test-only code in the library. Inside the hook a peer "B" does what a
+# real competitor would: reaps the stale dir, then installs its own live lock at the
+# same path. Waiter A must not destroy that.
+_reaper_race() {
+    local lock="$1" bpid="$2"
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$lock"
+        ACT_MUTEX_WAIT_SECS=0
+        ACT_MUTEX_POLL_SECS=1
+        warn() {
+            case "$*" in
+                *"Reaping stale act mutex"*)
+                    warn() { :; }          # interleave once only
+                    rm -rf "$lock"
+                    command mkdir -p "$lock"
+                    echo "$bpid" > "$lock/pid"
+                    ;;
+            esac
+        }
+        acquire_act_mutex
+    ) >/dev/null 2>&1
+}
+
+test_reaper_race_dead_pid_branch() {
+    local name="reaper race (dead-PID branch): a peer's re-acquired lock survives"
+    local lock="$SANDBOX/r1.lock"
+    rm -rf "$lock"; command mkdir -p "$lock"
+    echo "999999" > "$lock/pid"        # a PID that is not alive
+    _reaper_race "$lock" "4242"
+    local got
+    got=$(cat "$lock/pid" 2>/dev/null || echo MISSING)
+    check "$name" "$got" "4242"
+    rm -rf "$lock"
+}
+
+test_reaper_race_unstamped_branch() {
+    local name="reaper race (old-unstamped branch): a peer's re-acquired lock survives"
+    local lock="$SANDBOX/r2.lock"
+    rm -rf "$lock"; command mkdir -p "$lock"
+    touch -t 202001010000 "$lock"      # unstamped and past the grace window
+    _reaper_race "$lock" "4343"
+    local got
+    got=$(cat "$lock/pid" 2>/dev/null || echo MISSING)
+    check "$name" "$got" "4343"
+    rm -rf "$lock"
+}
+
+test_two_waiters_race_one_reaps() {
+    local name="two waiters on one stale dir: no error, and acquisition still works"
+    local lock="$SANDBOX/r3.lock"
+    rm -rf "$lock"; command mkdir -p "$lock"
+    echo "999999" > "$lock/pid"
+    local errlog="$SANDBOX/race.err"
+    : > "$errlog"
+    local i
+    for i in 1 2; do
+        (
+            REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+            . "$LIB"
+            ACT_MUTEX_DIR="$lock"
+            ACT_MUTEX_WAIT_SECS=2
+            ACT_MUTEX_POLL_SECS=1
+            acquire_act_mutex
+        ) >>"$errlog" 2>&1 &
+    done
+    wait
+    # A later acquire must still succeed: nothing may be left wedged.
+    local rc
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$lock"
+        ACT_MUTEX_WAIT_SECS=3
+        ACT_MUTEX_POLL_SECS=1
+        acquire_act_mutex
+    ) >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" -eq 0 ] && ! grep -qiE '^rm:|^mv:|No such file' "$errlog"; then
+        pass "$name"
+    else
+        fail "$name" "acquire rc=$rc; stderr: $(tr '\n' ' ' < "$errlog")"
+    fi
+    rm -rf "$lock"
+}
+
+test_orphaned_tomb_is_swept_by_age() {
+    local name="an orphaned reap tomb older than the window is swept, a fresh one is not"
+    local lock="$SANDBOX/r4.lock"
+    rm -rf "$lock" "$lock".reap.*
+    local oldtomb="${lock}.reap.111.1" freshtomb="${lock}.reap.222.2"
+    command mkdir -p "$oldtomb" "$freshtomb"
+    touch -t 202001010000 "$oldtomb"
+    command mkdir -p "$lock"          # something for the waiter to contend with
+    echo "999999" > "$lock/pid"
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$lock"
+        ACT_MUTEX_WAIT_SECS=0
+        ACT_MUTEX_POLL_SECS=1
+        acquire_act_mutex
+    ) >/dev/null 2>&1
+    if [ ! -d "$oldtomb" ] && [ -d "$freshtomb" ]; then
+        pass "$name"
+    else
+        fail "$name" "old tomb exists=$([ -d "$oldtomb" ] && echo yes || echo no), fresh tomb exists=$([ -d "$freshtomb" ] && echo yes || echo no)"
+    fi
+    rm -rf "$lock" "$oldtomb" "$freshtomb"
+}
+
+_age_lock() {
+    local lock="$1" secs="$2" stamp
+    rm -rf "$lock"; command mkdir -p "$lock"
+    stamp=$(date -v-"${secs}"S +%Y%m%d%H%M.%S 2>/dev/null) \
+        || stamp=$(date -d "-${secs} seconds" +%Y%m%d%H%M.%S 2>/dev/null) \
+        || return 1
+    touch -t "$stamp" "$lock"
+}
+
+_try_acquire() {
+    local lock="$1"
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$lock"
+        ACT_MUTEX_WAIT_SECS=0
+        ACT_MUTEX_POLL_SECS=1
+        acquire_act_mutex
+    ) >/dev/null 2>&1
+}
+
+test_stale_threshold_is_exact_at_120s() {
+    local name="stale window is exactly 120s: 119s kept, 121s reaped"
+    local lock="$SANDBOX/age.lock"
+    local below above
+    _age_lock "$lock" 119 || { fail "$name" "could not backdate (no BSD or GNU date)"; return 0; }
+    _try_acquire "$lock"; below=$?          # must NOT reap -> acquire fails
+    _age_lock "$lock" 121 || { fail "$name" "could not backdate"; return 0; }
+    _try_acquire "$lock"; above=$?          # must reap -> acquire succeeds
+    rm -rf "$lock"
+    if [ "$below" -ne 0 ] && [ "$above" -eq 0 ]; then
+        pass "$name"
+    else
+        fail "$name" "119s acquire rc=$below (want nonzero), 121s acquire rc=$above (want 0)"
+    fi
+}
+
 test_mid_acquire_leak_is_bounded_by_stale_expiry() {
     local name="an interrupt right after mkdir leaks a lock, but staleness bounds it"
     local lock="$SANDBOX/m4.lock"
@@ -474,6 +627,11 @@ test_mutex_trap_installed_before_mkdir
 test_mutex_failed_pid_write_is_acquisition_failure
 test_contender_timeout_leaves_peer_lock_intact
 test_release_leaves_lock_we_do_not_own
+test_reaper_race_dead_pid_branch
+test_reaper_race_unstamped_branch
+test_two_waiters_race_one_reaps
+test_orphaned_tomb_is_swept_by_age
+test_stale_threshold_is_exact_at_120s
 test_unstamped_lock_expires_by_staleness
 test_mid_acquire_leak_is_bounded_by_stale_expiry
 echo "--- finding 3: exit-code override ---"

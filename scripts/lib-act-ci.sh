@@ -881,23 +881,115 @@ ACT_MUTEX_DIR="${ACT_MUTEX_DIR:-${TMPDIR:-/tmp}/act-ci-global.lock}"
 # parent's lock.
 _ACT_MUTEX_OWNED=""
 
+# Inode number of a path. BSD and GNU `stat` take different flags for this; `ls -di`
+# is the same everywhere.
+_act_path_inode() {
+    ls -di "$1" 2>/dev/null | awk '{print $1; exit}'
+}
+
+# How long an unstamped lock dir, or a reap tomb, may sit before it is fair game.
+ACT_MUTEX_STALE_SECS="${ACT_MUTEX_STALE_SECS:-120}"
+
+# True when $1 was last modified more than $2 seconds ago.
+#
+# This replaced `find -maxdepth 0 -mmin +2`, whose meaning differs by platform.
+# BSD find rounds the age UP to the next whole minute, so `+2` fires above 120s.
+# GNU find truncates to whole minutes, so `+2` does not fire until 180s. The same
+# expression therefore gives a 120s window on macOS and a 180s window on Linux, for
+# a template meant to run on both. Verified here on BSD find: 119s kept, 121s reaped.
+#
+# `-ot` compares mtimes directly, so the cutoff is exact to the second. If the age
+# cannot be computed the answer is NO, which fails closed: never reap.
+_act_path_older_than() {
+    local path="$1" secs="$2" ref stamp older=1
+    ref=$(mktemp "${TMPDIR:-/tmp}/act-age-ref.XXXXXX") || return 1
+    # BSD date takes -v, GNU date takes -d. Try both before giving up.
+    stamp=$(date -v-"${secs}"S +%Y%m%d%H%M.%S 2>/dev/null) \
+        || stamp=$(date -d "-${secs} seconds" +%Y%m%d%H%M.%S 2>/dev/null) \
+        || { rm -f "$ref"; return 1; }
+    if ! touch -t "$stamp" "$ref" 2>/dev/null; then
+        rm -f "$ref"
+        return 1
+    fi
+    [[ "$path" -ot "$ref" ]] && older=0
+    rm -f "$ref"
+    return $older
+}
+
+# Remove a lock dir we have judged stale, without ever deleting the dir that replaced
+# it in the meantime.
+#
+# Two things make this safe, and BOTH are needed.
+#
+# The rename does the removal on a name no other waiter will look up, so the window
+# between "decide" and "gone" carries no `rm -rf` against the shared path. But
+# rename(2) resolves the PATH, not the inode: if a peer reaps and re-creates the lock
+# between our decision and our `mv`, a bare rename would carry off the peer's BRAND
+# NEW dir. So we re-read the inode immediately before renaming, and do nothing unless
+# it is still the dir we judged.
+#
+# Residual: the gap between that inode read and the rename is two adjacent statements
+# and cannot be closed in portable shell. Closing it needs an inode-stable lock
+# primitive; macOS has no flock(1), which is why this is a mkdir mutex to begin with.
+_act_mutex_reap_atomic() {
+    local expect_inode="$1"
+    local now_inode
+    now_inode=$(_act_path_inode "$ACT_MUTEX_DIR")
+    [[ -n "$now_inode" && "$now_inode" == "$expect_inode" ]] || return 1
+    local tomb="${ACT_MUTEX_DIR}.reap.$$.${RANDOM}"
+    if mv "$ACT_MUTEX_DIR" "$tomb" 2>/dev/null; then
+        rm -rf "$tomb"
+        return 0
+    fi
+    return 1
+}
+
+# A process killed between its rename and its delete leaves a tomb. Sweep tombs on
+# the same age rule the unstamped-lock branch uses, so they cannot accumulate.
+_act_mutex_sweep_tombs() {
+    local t
+    for t in "${ACT_MUTEX_DIR}".reap.*; do
+        [[ -d "$t" ]] || continue          # unmatched glob stays literal
+        if _act_path_older_than "$t" "$ACT_MUTEX_STALE_SECS"; then
+            rm -rf "$t"
+        fi
+    done
+}
+
+# ACCEPTED RESIDUAL: age is not liveness. The unstamped branch cannot ask whether an
+# owner is alive, because there is no PID to ask about, so it reaps on age alone. A
+# peer paused between its mkdir and its PID write for longer than the window loses
+# its lock: measured, a 119s-old unstamped dir is left alone and a 121s-old one is
+# reaped. This is sound for local peers, which share one system clock, and the
+# threshold stays at 120s. Do not lower it.
+#
+# Those two measurements hold on every platform only because the age test is now
+# exact (see _act_path_older_than). Under the previous `find -mmin +2` they held on
+# BSD find and not on GNU find, which kept a 121s dir for another minute.
 _act_mutex_reap_if_stale() {
+    _act_mutex_sweep_tombs
+
+    # Identify the dir ONCE, and reap only this inode.
+    local inode
+    inode=$(_act_path_inode "$ACT_MUTEX_DIR")
+    [[ -n "$inode" ]] || return 1   # already gone; the caller just retries mkdir
+
     local holder
     holder=$(cat "${ACT_MUTEX_DIR}/pid" 2>/dev/null || true)
     if [[ -n "$holder" ]]; then
         if ! kill -0 "$holder" 2>/dev/null; then
             warn "Reaping stale act mutex (holder pid $holder is dead)"
-            rm -rf "$ACT_MUTEX_DIR"
-            return 0
+            _act_mutex_reap_atomic "$inode" && return 0
+            return 1
         fi
         return 1  # live holder
     fi
     # No pid file: either the holder is mid-handshake (fresh dir) or it died between
-    # mkdir and writing the pid. Reap only past a 120s grace window.
-    if [[ -n "$(find "$ACT_MUTEX_DIR" -maxdepth 0 -mmin +2 2>/dev/null)" ]]; then
-        warn "Reaping stale act mutex (no pid file, dir older than 120s)"
-        rm -rf "$ACT_MUTEX_DIR"
-        return 0
+    # mkdir and writing the pid. Reap only past the ACT_MUTEX_STALE_SECS grace window.
+    if _act_path_older_than "$ACT_MUTEX_DIR" "$ACT_MUTEX_STALE_SECS"; then
+        warn "Reaping stale act mutex (no pid file, dir older than ${ACT_MUTEX_STALE_SECS}s)"
+        _act_mutex_reap_atomic "$inode" && return 0
+        return 1
     fi
     return 1
 }
