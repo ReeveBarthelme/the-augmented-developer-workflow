@@ -862,136 +862,63 @@ check_git_hooks_path() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────
-# Cross-session act mutex
+# Cross-session act mutex, on a kernel flock.
 #
 # Concurrent Docker-based act runs share one Docker Desktop VM. The loser (often
 # both) gets its install/test steps OOM-killed with daemon errors that look exactly
 # like a red gate at the summary level. Serialize the runs.
 #
-# mkdir is the atomic primitive (macOS has no flock(1)). The holder records its pid;
-# ACT_MUTEX_HELD lets a run's own child invocations pass straight through.
+# Why flock and not a lock directory: the kernel drops the lock when the holder
+# dies, so there is no staleness model, no reaper, and no compare-and-delete to get
+# wrong. Every race the directory version had came from deciding a lock was
+# abandoned and then deleting it as a separate step. macOS ships no flock(1), so
+# python3 takes the lock on a descriptor this shell already holds. The lock lives on
+# one machine's kernel: it does NOT serialize across NFS or between containers.
+#
+# One inherited-descriptor caveat, measured rather than assumed. Children inherit
+# fd 9, so an orphan that outlives this shell keeps the lock held until it too dies.
+# For act that is the behaviour we want, since the lock should cover the whole run,
+# but a wedged orphan holds it. reclaim_orphaned_act_ports already reaps orphaned act
+# processes. A command that must not hold the lock can close it with `9>&-`.
 # ─────────────────────────────────────────────────────────────────────────
+
+# ACT_MUTEX_DIR keeps its name for the override path and its warning, but it now
+# names the LOCK FILE's location rather than a directory that gets created.
 ACT_MUTEX_DIR_OVERRIDDEN="${ACT_MUTEX_DIR:+1}"
 ACT_MUTEX_DIR="${ACT_MUTEX_DIR:-${TMPDIR:-/tmp}/act-ci-global.lock}"
+ACT_MUTEX_LOCKFILE="${ACT_MUTEX_DIR%/}.lock"
 
-# Ownership flag, set the instant mkdir returns. The pid FILE cannot prove ownership,
-# because between mkdir and the pid write there is a window where the lock is held and
-# unstamped; a cleanup running then would walk away and leak it for the whole 120s
-# grace period. Deliberately NOT exported, so a forked child never releases its
-# parent's lock.
+# Fixed descriptor 9, not bash 4.1's `exec {fd}>>`: macOS ships bash 3.2.57, which
+# has no dynamic-fd form, and this template has to run there. Nothing else in these
+# scripts uses fd 9.
+ACT_MUTEX_FD=9
+
+# Ownership flag. Not exported, so a forked child never releases its parent's lock.
 _ACT_MUTEX_OWNED=""
 
-# Inode number of a path. BSD and GNU `stat` take different flags for this; `ls -di`
-# is the same everywhere.
-_act_path_inode() {
-    ls -di "$1" 2>/dev/null | awk '{print $1; exit}'
-}
-
-# How long an unstamped lock dir, or a reap tomb, may sit before it is fair game.
-ACT_MUTEX_STALE_SECS="${ACT_MUTEX_STALE_SECS:-120}"
-
-# True when $1 was last modified more than $2 seconds ago.
+# Take an exclusive lock on the descriptor this shell already holds, waiting up to
+# $1 seconds and re-trying every $2. Exits 0 on success, 75 on timeout.
 #
-# This replaced `find -maxdepth 0 -mmin +2`, whose meaning differs by platform.
-# BSD find rounds the age UP to the next whole minute, so `+2` fires above 120s.
-# GNU find truncates to whole minutes, so `+2` does not fire until 180s. The same
-# expression therefore gives a 120s window on macOS and a 180s window on Linux, for
-# a template meant to run on both. Verified here on BSD find: 119s kept, 121s reaped.
-#
-# `-ot` compares mtimes directly, so the cutoff is exact to the second. If the age
-# cannot be computed the answer is NO, which fails closed: never reap.
-_act_path_older_than() {
-    local path="$1" secs="$2" ref stamp older=1
-    ref=$(mktemp "${TMPDIR:-/tmp}/act-age-ref.XXXXXX") || return 1
-    # BSD date takes -v, GNU date takes -d. Try both before giving up.
-    stamp=$(date -v-"${secs}"S +%Y%m%d%H%M.%S 2>/dev/null) \
-        || stamp=$(date -d "-${secs} seconds" +%Y%m%d%H%M.%S 2>/dev/null) \
-        || { rm -f "$ref"; return 1; }
-    if ! touch -t "$stamp" "$ref" 2>/dev/null; then
-        rm -f "$ref"
-        return 1
-    fi
-    [[ "$path" -ot "$ref" ]] && older=0
-    rm -f "$ref"
-    return $older
-}
+# flock binds to the open file DESCRIPTION, not to the process that called it, so the
+# lock stays held in this shell after python exits. That is the whole trick, and it is
+# asserted by the test named "lock survives the python child that took it".
+_act_flock_acquire() {
+    local wait_secs="$1" poll_secs="$2"
+    python3 - "$ACT_MUTEX_FD" "$wait_secs" "$poll_secs" <<'PY'
+import fcntl, sys, time
 
-# Remove a lock dir we have judged stale, without ever deleting the dir that replaced
-# it in the meantime.
-#
-# Two things make this safe, and BOTH are needed.
-#
-# The rename does the removal on a name no other waiter will look up, so the window
-# between "decide" and "gone" carries no `rm -rf` against the shared path. But
-# rename(2) resolves the PATH, not the inode: if a peer reaps and re-creates the lock
-# between our decision and our `mv`, a bare rename would carry off the peer's BRAND
-# NEW dir. So we re-read the inode immediately before renaming, and do nothing unless
-# it is still the dir we judged.
-#
-# Residual: the gap between that inode read and the rename is two adjacent statements
-# and cannot be closed in portable shell. Closing it needs an inode-stable lock
-# primitive; macOS has no flock(1), which is why this is a mkdir mutex to begin with.
-_act_mutex_reap_atomic() {
-    local expect_inode="$1"
-    local now_inode
-    now_inode=$(_act_path_inode "$ACT_MUTEX_DIR")
-    [[ -n "$now_inode" && "$now_inode" == "$expect_inode" ]] || return 1
-    local tomb="${ACT_MUTEX_DIR}.reap.$$.${RANDOM}"
-    if mv "$ACT_MUTEX_DIR" "$tomb" 2>/dev/null; then
-        rm -rf "$tomb"
-        return 0
-    fi
-    return 1
-}
-
-# A process killed between its rename and its delete leaves a tomb. Sweep tombs on
-# the same age rule the unstamped-lock branch uses, so they cannot accumulate.
-_act_mutex_sweep_tombs() {
-    local t
-    for t in "${ACT_MUTEX_DIR}".reap.*; do
-        [[ -d "$t" ]] || continue          # unmatched glob stays literal
-        if _act_path_older_than "$t" "$ACT_MUTEX_STALE_SECS"; then
-            rm -rf "$t"
-        fi
-    done
-}
-
-# ACCEPTED RESIDUAL: age is not liveness. The unstamped branch cannot ask whether an
-# owner is alive, because there is no PID to ask about, so it reaps on age alone. A
-# peer paused between its mkdir and its PID write for longer than the window loses
-# its lock: measured, a 119s-old unstamped dir is left alone and a 121s-old one is
-# reaped. This is sound for local peers, which share one system clock, and the
-# threshold stays at 120s. Do not lower it.
-#
-# Those two measurements hold on every platform only because the age test is now
-# exact (see _act_path_older_than). Under the previous `find -mmin +2` they held on
-# BSD find and not on GNU find, which kept a 121s dir for another minute.
-_act_mutex_reap_if_stale() {
-    _act_mutex_sweep_tombs
-
-    # Identify the dir ONCE, and reap only this inode.
-    local inode
-    inode=$(_act_path_inode "$ACT_MUTEX_DIR")
-    [[ -n "$inode" ]] || return 1   # already gone; the caller just retries mkdir
-
-    local holder
-    holder=$(cat "${ACT_MUTEX_DIR}/pid" 2>/dev/null || true)
-    if [[ -n "$holder" ]]; then
-        if ! kill -0 "$holder" 2>/dev/null; then
-            warn "Reaping stale act mutex (holder pid $holder is dead)"
-            _act_mutex_reap_atomic "$inode" && return 0
-            return 1
-        fi
-        return 1  # live holder
-    fi
-    # No pid file: either the holder is mid-handshake (fresh dir) or it died between
-    # mkdir and writing the pid. Reap only past the ACT_MUTEX_STALE_SECS grace window.
-    if _act_path_older_than "$ACT_MUTEX_DIR" "$ACT_MUTEX_STALE_SECS"; then
-        warn "Reaping stale act mutex (no pid file, dir older than ${ACT_MUTEX_STALE_SECS}s)"
-        _act_mutex_reap_atomic "$inode" && return 0
-        return 1
-    fi
-    return 1
+fd = int(sys.argv[1])
+deadline = time.time() + float(sys.argv[2])
+poll = max(float(sys.argv[3]), 0.1)
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        sys.exit(0)
+    except BlockingIOError:
+        if time.time() >= deadline:
+            sys.exit(75)
+        time.sleep(poll)
+PY
 }
 
 acquire_act_mutex() {
@@ -999,81 +926,70 @@ acquire_act_mutex() {
     if [[ -n "${ACT_MUTEX_HELD:-}" ]] && kill -0 "$ACT_MUTEX_HELD" 2>/dev/null; then
         return 0
     fi
-    # Arm cleanup BEFORE the mkdir loop. Installing it afterwards left a window in
-    # which the lock dir existed with no trap behind it, so a Ctrl+C there leaked the
-    # lock and every other session waited out the 120s stale grace period.
-    # release_act_mutex is a no-op until _ACT_MUTEX_OWNED is set, so arming this early
-    # is safe even on the paths where we never acquire.
-    # INT/TERM/HUP exit explicitly so the EXIT trap runs; targets that acquire the
-    # mutex before build_act_flags would otherwise have no signal trap at all.
+
+    # Re-derive the lock path HERE, not only at source time: a caller that sets
+    # ACT_MUTEX_DIR after sourcing the library (the entry script does, and so does
+    # every test) would otherwise lock a stale path and silently share a lock with
+    # everyone else.
+    ACT_MUTEX_LOCKFILE="${ACT_MUTEX_DIR%/}.lock"
+
+    # Arm cleanup before the lock exists. release_act_mutex is a no-op until
+    # _ACT_MUTEX_OWNED is set, so arming early is safe on every path.
+    # INT/TERM/HUP exit explicitly so the EXIT trap runs.
     trap 'cleanup_secrets; release_act_mutex' EXIT
     trap 'exit 130' INT TERM HUP
+
     # A caller-supplied ACT_MUTEX_DIR splits sessions into separate lock namespaces,
     # which also splits the port reservation this mutex is what protects.
     if [[ -n "${ACT_MUTEX_DIR_OVERRIDDEN:-}" ]]; then
         warn "ACT_MUTEX_DIR is overridden — runs using a different lock namespace are NOT serialized,"
         warn "so artifact-server port isolation between them is no longer guaranteed."
     fi
-    local waited=0 announced=0
-    local wait_max="${ACT_MUTEX_WAIT_SECS:-7200}" poll="${ACT_MUTEX_POLL_SECS:-15}"
-    # The ownership flag is set INSIDE the same compound statement as mkdir, so the
-    # gap between taking the lock and recording that we hold it is as small as bash
-    # allows. It cannot be closed entirely, which is why release_act_mutex also
-    # reclaims an unstamped dir.
-    while true; do
-        if mkdir "$ACT_MUTEX_DIR" 2>/dev/null; then _ACT_MUTEX_OWNED=1; break; fi
-        # `if` keeps the non-zero branch exempt from the caller's errexit.
-        if _act_mutex_reap_if_stale; then continue; fi
-        if (( announced == 0 )); then
-            warn "Another session's act run holds the CI mutex ($(cat "${ACT_MUTEX_DIR}/pid" 2>/dev/null || echo '?')) — waiting up to ${wait_max}s"
-            announced=1
-        fi
-        if (( waited >= wait_max )); then
-            err "Timed out after ${waited}s waiting for the act CI mutex (${ACT_MUTEX_DIR})"
-            return 1
-        fi
-        sleep "$poll"
-        waited=$(( waited + poll ))
-    done
-    # A failed pid stamp is an ACQUISITION FAILURE, not a warning. An unstamped lock
-    # cannot be reaped by another session's liveness check until the grace period
-    # expires, so returning success here would hand out a lock nobody can recover.
-    # rmdir, not rm -rf: the dir is empty, and rm -rf on an unreadable dir is
-    # platform-dependent.
-    if ! echo "$$" > "${ACT_MUTEX_DIR}/pid" 2>/dev/null; then
-        err "Took the act mutex but could not write ${ACT_MUTEX_DIR}/pid — releasing it."
-        rm -f "${ACT_MUTEX_DIR}/pid" 2>/dev/null
-        rmdir "$ACT_MUTEX_DIR" 2>/dev/null
-        _ACT_MUTEX_OWNED=""
+
+    if ! command -v python3 &>/dev/null; then
+        err "python3 not found, and it is what takes the CI lock on this platform."
+        err "Install python3; without it concurrent act runs would share one Docker VM and OOM-kill each other."
         return 1
     fi
-    export ACT_MUTEX_HELD="$$"
-    return 0
-}
 
-release_act_mutex() {
-    # PROVEN OWNERSHIP is the only safe predicate for deleting this dir, and there
-    # are exactly two proofs: _ACT_MUTEX_OWNED, set in the same compound statement as
-    # our own successful mkdir, or a PID stamp that is ours.
-    #
-    # "The dir exists and carries no PID stamp" is NOT a proof, even from a shell
-    # that was itself inside acquire_act_mutex. A contender that times out or takes a
-    # signal while waiting satisfies that test, and the unstamped dir it sees belongs
-    # to a PEER that is between its mkdir and its PID write. Deleting it there hands
-    # the lock to two sessions at once. That reclaim was tried and reverted.
-    #
-    # The cost is a narrow leak: a process killed between mkdir returning and the
-    # flag assignment leaves an unstamped dir. That is bounded, not permanent, by the
-    # 120s unstamped-dir branch in _act_mutex_reap_if_stale, which the next waiter
-    # runs. A bounded wait beats two sessions believing they hold the same lock.
-    if [[ "${_ACT_MUTEX_OWNED:-}" == "1" ]]; then
-        rm -rf "$ACT_MUTEX_DIR"
-        _ACT_MUTEX_OWNED=""
-        unset ACT_MUTEX_HELD
+    : >> "$ACT_MUTEX_LOCKFILE" 2>/dev/null || {
+        err "Cannot create the CI lock file: $ACT_MUTEX_LOCKFILE"
+        return 1
+    }
+
+    # shellcheck disable=SC2093 # not exec-replacing the shell; this only opens fd 9
+    eval "exec ${ACT_MUTEX_FD}>>\"\$ACT_MUTEX_LOCKFILE\"" || {
+        err "Cannot open fd $ACT_MUTEX_FD on $ACT_MUTEX_LOCKFILE"
+        return 1
+    }
+
+    local wait_max="${ACT_MUTEX_WAIT_SECS:-7200}" poll="${ACT_MUTEX_POLL_SECS:-15}"
+    if _act_flock_acquire "$wait_max" "$poll"; then
+        _ACT_MUTEX_OWNED=1
+        export ACT_MUTEX_HELD="$$"
         return 0
     fi
-    if [[ "$(cat "${ACT_MUTEX_DIR}/pid" 2>/dev/null)" == "$$" ]]; then
-        rm -rf "$ACT_MUTEX_DIR"
+
+    # Timed out. Name the holder when that is cheap; never make this path expensive.
+    local holder=""
+    if command -v lsof &>/dev/null; then
+        holder=$(lsof -t "$ACT_MUTEX_LOCKFILE" 2>/dev/null | tr '\n' ' ')
+    fi
+    if [[ -n "$holder" ]]; then
+        err "Timed out after ${wait_max}s waiting for the act CI lock (held by pid(s): ${holder% })"
+    else
+        err "Timed out after ${wait_max}s waiting for the act CI lock ($ACT_MUTEX_LOCKFILE)"
+    fi
+    eval "exec ${ACT_MUTEX_FD}>&-" 2>/dev/null || true
+    return 1
+}
+
+# Closing the descriptor drops the lock. There is nothing to delete: the lock file
+# is a rendezvous point, not the lock, and leaving it in place is correct.
+release_act_mutex() {
+    if [[ "${_ACT_MUTEX_OWNED:-}" == "1" ]]; then
+        eval "exec ${ACT_MUTEX_FD}>&-" 2>/dev/null || true
+        _ACT_MUTEX_OWNED=""
         unset ACT_MUTEX_HELD
     fi
 }

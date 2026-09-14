@@ -107,44 +107,180 @@ test_run_parallel_refuses_more_groups_than_window() {
 
 # ── Finding 2: mutex acquisition window ───────────────────────────────────
 
-test_mutex_trap_installed_before_mkdir() {
-    local name="acquire_act_mutex installs the EXIT trap BEFORE mkdir"
-    local probe="$SANDBOX/trapprobe.txt"
-    : > "$probe"
-    (
-        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
-        . "$LIB"
-        ACT_MUTEX_DIR="$SANDBOX/m1.lock"
-        # Capture what the EXIT trap looks like at the moment mkdir is called.
-        mkdir() { trap -p EXIT > "$probe"; command mkdir "$@"; }
-        acquire_act_mutex
-    ) >/dev/null 2>&1
-    if grep -q 'release_act_mutex' "$probe" 2>/dev/null; then
-        pass "$name"
-    else
-        fail "$name" "no release_act_mutex trap was armed when mkdir ran (lock leaks on SIGINT)"
-    fi
+# The lock file the library derives from ACT_MUTEX_DIR.
+_lockfile_for() { echo "${1%/}.lock"; }
+
+# Try to take the flock from OUTSIDE the library, on a fresh open of the same path.
+# Prints HELD when someone else owns it, FREE when it could be taken.
+_probe_lock() {
+    python3 - "$1" <<'PY'
+import fcntl, sys
+f = open(sys.argv[1], "a")
+try:
+    fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    print("FREE")
+except BlockingIOError:
+    print("HELD")
+PY
 }
 
-test_mutex_failed_pid_write_is_acquisition_failure() {
-    local name="acquire_act_mutex fails and removes the dir when the PID write fails"
-    local lock="$SANDBOX/m2.lock"
-    local rc
+test_flock_holder_keeps_lock_and_second_acquire_times_out() {
+    local name="a live holder keeps the lock; a second acquire times out and leaves the file"
+    local base="$SANDBOX/f1" lf
+    lf=$(_lockfile_for "$base")
+    # Holder forks nothing that could inherit fd 9 and outlive it.
     (
         REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
         . "$LIB"
-        ACT_MUTEX_DIR="$lock"
-        # mode 000 dir: mkdir succeeds, the pid write inside it cannot.
-        umask 0777
+        ACT_MUTEX_DIR="$base"
+        acquire_act_mutex || exit 1
+        # `9>&-` closes fd 9 for this child only, so the sleep does NOT inherit the
+        # lock descriptor. Without that the lock would outlive the subshell.
+        sleep 2 9>&-
+        exit 0
+    ) >/dev/null 2>&1 &
+    local holder=$!
+    sleep 0.5
+    local probe rc
+    probe=$(_probe_lock "$lf")
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$base"
+        ACT_MUTEX_WAIT_SECS=0
+        ACT_MUTEX_POLL_SECS=1
         acquire_act_mutex
     ) >/dev/null 2>&1
     rc=$?
-    if [ "$rc" -ne 0 ] && [ ! -d "$lock" ]; then
+    wait "$holder" 2>/dev/null
+    if [ "$probe" = "HELD" ] && [ "$rc" -ne 0 ] && [ -f "$lf" ]; then
         pass "$name"
     else
-        fail "$name" "expected rc!=0 and no leftover lock dir; got rc=$rc dir-exists=$([ -d "$lock" ] && echo yes || echo no)"
+        fail "$name" "probe=$probe second-acquire rc=$rc (want nonzero) lockfile-present=$([ -f "$lf" ] && echo yes || echo no)"
     fi
-    rmdir "$lock" 2>/dev/null
+    rm -f "$lf"
+}
+
+test_flock_released_when_holder_is_killed() {
+    local name="kill -9 on the holder frees the lock, with no reaper involved"
+    local base="$SANDBOX/f2" lf
+    lf=$(_lockfile_for "$base")
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$base"
+        acquire_act_mutex || exit 1
+        # `9>&-` keeps fd 9 out of the child, so kill -9 on this subshell really is
+        # the last holder going away.
+        while :; do sleep 1 9>&-; done
+    ) >/dev/null 2>&1 &
+    local holder=$!
+    sleep 0.5
+    local before after
+    before=$(_probe_lock "$lf")
+    kill -9 "$holder" 2>/dev/null
+    wait "$holder" 2>/dev/null
+    sleep 0.3
+    after=$(_probe_lock "$lf")
+    if [ "$before" = "HELD" ] && [ "$after" = "FREE" ]; then
+        pass "$name"
+    else
+        fail "$name" "before=$before (want HELD) after=$after (want FREE)"
+    fi
+    rm -f "$lf"
+}
+
+test_flock_survives_the_python_child_that_took_it() {
+    local name="lock survives the python child that took it"
+    # The whole design rests on flock binding to the open file description rather
+    # than to the process that called it. Assert it rather than assuming it.
+    local base="$SANDBOX/f3" lf
+    lf=$(_lockfile_for "$base")
+    local probe
+    probe=$(
+        (
+            REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+            . "$LIB"
+            ACT_MUTEX_DIR="$base"
+            acquire_act_mutex >/dev/null 2>&1 || { echo ACQUIRE_FAILED; exit 1; }
+            # python3 has exited by now; a separate process must still be blocked.
+            python3 - "$ACT_MUTEX_LOCKFILE" <<'PY'
+import fcntl, sys
+f = open(sys.argv[1], "a")
+try:
+    fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    print("FREE")
+except BlockingIOError:
+    print("HELD")
+PY
+        )
+    )
+    check "$name" "$probe" "HELD"
+    rm -f "$lf"
+}
+
+test_flock_release_allows_reacquire() {
+    local name="release closes the descriptor and a second acquire succeeds"
+    local base="$SANDBOX/f4" lf
+    lf=$(_lockfile_for "$base")
+    local first second
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$base"
+        acquire_act_mutex >/dev/null 2>&1 || exit 1
+        release_act_mutex
+        exit 0
+    ) >/dev/null 2>&1
+    first=$?
+    second=$(_probe_lock "$lf")
+    if [ "$first" -eq 0 ] && [ "$second" = "FREE" ]; then
+        pass "$name"
+    else
+        fail "$name" "first-cycle rc=$first probe-after-release=$second (want FREE)"
+    fi
+    rm -f "$lf"
+}
+
+test_release_without_ownership_is_a_noop() {
+    local name="control: release without ownership is a no-op"
+    local base="$SANDBOX/f5" lf
+    lf=$(_lockfile_for "$base")
+    : >> "$lf"
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$base"
+        release_act_mutex             # _ACT_MUTEX_OWNED deliberately unset
+    ) >/dev/null 2>&1
+    # The lock file must survive, and must still be takeable.
+    if [ -f "$lf" ] && [ "$(_probe_lock "$lf")" = "FREE" ]; then
+        pass "$name"
+    else
+        fail "$name" "lockfile-present=$([ -f "$lf" ] && echo yes || echo no) probe=$(_probe_lock "$lf")"
+    fi
+    rm -f "$lf"
+}
+
+test_acquire_fails_closed_without_python3() {
+    local name="acquire fails closed when python3 is unavailable"
+    local base="$SANDBOX/f6"
+    local out rc
+    out=$(
+        (
+            REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+            . "$LIB"
+            ACT_MUTEX_DIR="$base"
+            PATH=/nonexistent
+            acquire_act_mutex
+        ) 2>&1
+    )
+    rc=$?
+    if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'python3'; then
+        pass "$name"
+    else
+        fail "$name" "expected rc!=0 naming python3; got rc=$rc out=[$out]"
+    fi
 }
 
 # ── Finding 3: act exit-code override ─────────────────────────────────────
@@ -266,269 +402,6 @@ test_harness_scrubs_act_mutex_held() {
     fi
 }
 
-# ── Finding C: signal between mkdir and the ownership flag ────────────────
-
-test_contender_timeout_leaves_peer_lock_intact() {
-    local name="a contender that times out must NOT delete a peer's unstamped lock"
-    local lock="$SANDBOX/m3.lock"
-    command mkdir -p "$lock"   # peer holds it, fresh, not yet PID-stamped
-    (
-        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
-        . "$LIB"
-        ACT_MUTEX_DIR="$lock"
-        ACT_MUTEX_WAIT_SECS=0     # give up immediately, then run the EXIT trap
-        ACT_MUTEX_POLL_SECS=1
-        acquire_act_mutex
-    ) >/dev/null 2>&1
-    if [ -d "$lock" ]; then
-        pass "$name"
-        rm -rf "$lock"
-    else
-        fail "$name" "the failed contender deleted a peer session's lock dir"
-    fi
-}
-
-test_release_leaves_lock_we_do_not_own() {
-    local name="control: release_act_mutex never removes a lock it does not own"
-    local lock="$SANDBOX/m5.lock"
-    command mkdir -p "$lock"
-    (
-        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
-        . "$LIB"
-        ACT_MUTEX_DIR="$lock"
-        release_act_mutex             # _ACT_MUTEX_OWNED deliberately unset
-    ) >/dev/null 2>&1
-    if [ -d "$lock" ]; then
-        pass "$name"
-        rm -rf "$lock"
-    else
-        fail "$name" "release deleted a lock dir this shell never owned"
-    fi
-}
-
-test_unstamped_lock_expires_by_staleness() {
-    local name="an unstamped lock older than the 120s grace window is reaped by a waiter"
-    local lock="$SANDBOX/m6.lock"
-    command mkdir -p "$lock"
-    # Backdate well past the -mmin +2 window. A fixed past timestamp keeps this
-    # working on both BSD and GNU touch without date-arithmetic flags.
-    touch -t 202001010000 "$lock"
-    local rc
-    (
-        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
-        . "$LIB"
-        ACT_MUTEX_DIR="$lock"
-        ACT_MUTEX_WAIT_SECS=0
-        ACT_MUTEX_POLL_SECS=1
-        acquire_act_mutex             # must reap the stale dir, then take it
-    ) >/dev/null 2>&1
-    rc=$?
-    if [ "$rc" -eq 0 ]; then
-        pass "$name"
-    else
-        fail "$name" "waiter did not reclaim a stale unstamped lock; acquire rc=$rc"
-    fi
-    rm -rf "$lock"
-}
-
-# Interleave a competing reaper against waiter A, mid-reap.
-#
-# Both tests shadow `warn`, which the reaper calls after deciding a dir is stale and
-# before it removes anything. That is a hook point between decision and removal, and
-# it needs no test-only code in the library. Inside the hook a peer "B" does what a
-# real competitor would: reaps the stale dir, then installs its own live lock at the
-# same path. Waiter A must not destroy that.
-_reaper_race() {
-    local lock="$1" bpid="$2"
-    (
-        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
-        . "$LIB"
-        ACT_MUTEX_DIR="$lock"
-        ACT_MUTEX_WAIT_SECS=0
-        ACT_MUTEX_POLL_SECS=1
-        warn() {
-            case "$*" in
-                *"Reaping stale act mutex"*)
-                    warn() { :; }          # interleave once only
-                    rm -rf "$lock"
-                    command mkdir -p "$lock"
-                    echo "$bpid" > "$lock/pid"
-                    ;;
-            esac
-        }
-        acquire_act_mutex
-    ) >/dev/null 2>&1
-}
-
-test_reaper_race_dead_pid_branch() {
-    local name="reaper race (dead-PID branch): a peer's re-acquired lock survives"
-    local lock="$SANDBOX/r1.lock"
-    rm -rf "$lock"; command mkdir -p "$lock"
-    echo "999999" > "$lock/pid"        # a PID that is not alive
-    _reaper_race "$lock" "4242"
-    local got
-    got=$(cat "$lock/pid" 2>/dev/null || echo MISSING)
-    check "$name" "$got" "4242"
-    rm -rf "$lock"
-}
-
-test_reaper_race_unstamped_branch() {
-    local name="reaper race (old-unstamped branch): a peer's re-acquired lock survives"
-    local lock="$SANDBOX/r2.lock"
-    rm -rf "$lock"; command mkdir -p "$lock"
-    touch -t 202001010000 "$lock"      # unstamped and past the grace window
-    _reaper_race "$lock" "4343"
-    local got
-    got=$(cat "$lock/pid" 2>/dev/null || echo MISSING)
-    check "$name" "$got" "4343"
-    rm -rf "$lock"
-}
-
-test_two_waiters_race_one_reaps() {
-    local name="two waiters on one stale dir: no error, and acquisition still works"
-    local lock="$SANDBOX/r3.lock"
-    rm -rf "$lock"; command mkdir -p "$lock"
-    echo "999999" > "$lock/pid"
-    local errlog="$SANDBOX/race.err"
-    : > "$errlog"
-    local i
-    for i in 1 2; do
-        (
-            REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
-            . "$LIB"
-            ACT_MUTEX_DIR="$lock"
-            ACT_MUTEX_WAIT_SECS=2
-            ACT_MUTEX_POLL_SECS=1
-            acquire_act_mutex
-        ) >>"$errlog" 2>&1 &
-    done
-    wait
-    # A later acquire must still succeed: nothing may be left wedged.
-    local rc
-    (
-        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
-        . "$LIB"
-        ACT_MUTEX_DIR="$lock"
-        ACT_MUTEX_WAIT_SECS=3
-        ACT_MUTEX_POLL_SECS=1
-        acquire_act_mutex
-    ) >/dev/null 2>&1
-    rc=$?
-    if [ "$rc" -eq 0 ] && ! grep -qiE '^rm:|^mv:|No such file' "$errlog"; then
-        pass "$name"
-    else
-        fail "$name" "acquire rc=$rc; stderr: $(tr '\n' ' ' < "$errlog")"
-    fi
-    rm -rf "$lock"
-}
-
-test_orphaned_tomb_is_swept_by_age() {
-    local name="an orphaned reap tomb older than the window is swept, a fresh one is not"
-    local lock="$SANDBOX/r4.lock"
-    rm -rf "$lock" "$lock".reap.*
-    local oldtomb="${lock}.reap.111.1" freshtomb="${lock}.reap.222.2"
-    command mkdir -p "$oldtomb" "$freshtomb"
-    touch -t 202001010000 "$oldtomb"
-    command mkdir -p "$lock"          # something for the waiter to contend with
-    echo "999999" > "$lock/pid"
-    (
-        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
-        . "$LIB"
-        ACT_MUTEX_DIR="$lock"
-        ACT_MUTEX_WAIT_SECS=0
-        ACT_MUTEX_POLL_SECS=1
-        acquire_act_mutex
-    ) >/dev/null 2>&1
-    if [ ! -d "$oldtomb" ] && [ -d "$freshtomb" ]; then
-        pass "$name"
-    else
-        fail "$name" "old tomb exists=$([ -d "$oldtomb" ] && echo yes || echo no), fresh tomb exists=$([ -d "$freshtomb" ] && echo yes || echo no)"
-    fi
-    rm -rf "$lock" "$oldtomb" "$freshtomb"
-}
-
-_age_lock() {
-    local lock="$1" secs="$2" stamp
-    rm -rf "$lock"; command mkdir -p "$lock"
-    stamp=$(date -v-"${secs}"S +%Y%m%d%H%M.%S 2>/dev/null) \
-        || stamp=$(date -d "-${secs} seconds" +%Y%m%d%H%M.%S 2>/dev/null) \
-        || return 1
-    touch -t "$stamp" "$lock"
-}
-
-_try_acquire() {
-    local lock="$1"
-    (
-        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
-        . "$LIB"
-        ACT_MUTEX_DIR="$lock"
-        ACT_MUTEX_WAIT_SECS=0
-        ACT_MUTEX_POLL_SECS=1
-        acquire_act_mutex
-    ) >/dev/null 2>&1
-}
-
-test_stale_threshold_is_exact_at_120s() {
-    local name="stale window is exactly 120s: 119s kept, 121s reaped"
-    local lock="$SANDBOX/age.lock"
-    local below above
-    _age_lock "$lock" 119 || { fail "$name" "could not backdate (no BSD or GNU date)"; return 0; }
-    _try_acquire "$lock"; below=$?          # must NOT reap -> acquire fails
-    _age_lock "$lock" 121 || { fail "$name" "could not backdate"; return 0; }
-    _try_acquire "$lock"; above=$?          # must reap -> acquire succeeds
-    rm -rf "$lock"
-    if [ "$below" -ne 0 ] && [ "$above" -eq 0 ]; then
-        pass "$name"
-    else
-        fail "$name" "119s acquire rc=$below (want nonzero), 121s acquire rc=$above (want 0)"
-    fi
-}
-
-test_mid_acquire_leak_is_bounded_by_stale_expiry() {
-    local name="an interrupt right after mkdir leaks a lock, but staleness bounds it"
-    local lock="$SANDBOX/m4.lock"
-    (
-        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
-        . "$LIB"
-        ACT_MUTEX_DIR="$lock"
-        # `trap 'exit 130' TERM` is what the library installs, so running `exit 130`
-        # the instant the real mkdir returns IS the signal path. A real SIGTERM
-        # cannot reach this window: bash defers delivery until the enclosing `while`
-        # compound finishes, by which point the ownership flag is already set.
-        mkdir() {
-            command mkdir "$@" || return $?
-            exit 130
-        }
-        acquire_act_mutex
-    ) >/dev/null 2>&1
-
-    # The leak is EXPECTED and accepted: deleting it would mean deleting a dir we
-    # cannot prove is ours, which is the bug this replaced.
-    if [ ! -d "$lock" ]; then
-        fail "$name" "expected the interrupted acquire to leak an unstamped dir"
-        return 0
-    fi
-    # What must hold is that the leak self-heals: a later waiter reaps it once it
-    # ages past the grace window.
-    touch -t 202001010000 "$lock"
-    local rc
-    (
-        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
-        . "$LIB"
-        ACT_MUTEX_DIR="$lock"
-        ACT_MUTEX_WAIT_SECS=0
-        ACT_MUTEX_POLL_SECS=1
-        acquire_act_mutex
-    ) >/dev/null 2>&1
-    rc=$?
-    if [ "$rc" -eq 0 ]; then
-        pass "$name"
-    else
-        fail "$name" "leaked lock was not reclaimable by stale expiry; acquire rc=$rc"
-    fi
-    rm -rf "$lock"
-}
-
 # ── Finding 4: ACT_JOBS parsing ───────────────────────────────────────────
 
 _parse() {
@@ -622,18 +495,13 @@ echo "lib-act-ci tests"
 echo "--- finding 1: port window ---"
 test_find_free_port_exhaustion
 test_run_parallel_refuses_more_groups_than_window
-echo "--- finding 2: mutex ---"
-test_mutex_trap_installed_before_mkdir
-test_mutex_failed_pid_write_is_acquisition_failure
-test_contender_timeout_leaves_peer_lock_intact
-test_release_leaves_lock_we_do_not_own
-test_reaper_race_dead_pid_branch
-test_reaper_race_unstamped_branch
-test_two_waiters_race_one_reaps
-test_orphaned_tomb_is_swept_by_age
-test_stale_threshold_is_exact_at_120s
-test_unstamped_lock_expires_by_staleness
-test_mid_acquire_leak_is_bounded_by_stale_expiry
+echo "--- finding 2: mutex (kernel flock) ---"
+test_flock_holder_keeps_lock_and_second_acquire_times_out
+test_flock_released_when_holder_is_killed
+test_flock_survives_the_python_child_that_took_it
+test_flock_release_allows_reacquire
+test_release_without_ownership_is_a_noop
+test_acquire_fails_closed_without_python3
 echo "--- finding 3: exit-code override ---"
 test_override_rejects_forged_marker_on_exit42
 test_override_rejects_signal_exit
@@ -643,8 +511,6 @@ test_override_rejects_failure_before_success
 test_override_forgives_trailing_cleanup_error
 test_override_rejects_job_required_failed_phrase
 test_residual_forged_marker_with_non_job_error_is_forgiven
-echo "--- harness integrity ---"
-test_harness_scrubs_act_mutex_held
 echo "--- finding 4: ACT_JOBS parsing ---"
 test_parse_rejects_colon_prefixed_token
 test_parse_rejects_bare_token
@@ -654,6 +520,8 @@ echo "--- finding 5: pgrep / lsof ---"
 test_find_free_port_fails_closed_without_lsof
 test_find_free_port_override_without_lsof
 test_reclaim_warns_without_pgrep
+echo "--- harness integrity ---"
+test_harness_scrubs_act_mutex_held
 
 echo ""
 echo "ran $TESTS_RUN, failed $TESTS_FAILED"
