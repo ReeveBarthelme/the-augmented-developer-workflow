@@ -225,6 +225,18 @@ Error: unable to remove container' 1 f)
     check "$name" "$got" "0"
 }
 
+test_residual_forged_marker_with_non_job_error_is_forgiven() {
+    local name="RESIDUAL: forged marker + non-Job error is forgiven (documented)"
+    # This PINS a known, accepted gap. A step that prints the success marker on its
+    # own stdout is indistinguishable from act's real status line, and an act error
+    # that never says "Job" clears the other guard. See the residual note in
+    # run_act_job. If this test ever flips, the change was deliberate.
+    local got
+    got=$(_run_act_job_with_fake 'my-step: echoing 🏁  Job succeeded for fun
+Error: unable to remove container' 1 h)
+    check "$name" "$got" "0"
+}
+
 test_override_rejects_job_required_failed_phrase() {
     local name="a 'Job ... failed' line with no emoji marker still blocks the override"
     local got
@@ -256,67 +268,112 @@ test_harness_scrubs_act_mutex_held() {
 
 # ── Finding C: signal between mkdir and the ownership flag ────────────────
 
-test_mutex_no_leak_on_signal_right_after_mkdir() {
-    local name="an interrupt between mkdir and the ownership flag leaves no lock dir"
+test_contender_timeout_leaves_peer_lock_intact() {
+    local name="a contender that times out must NOT delete a peer's unstamped lock"
     local lock="$SANDBOX/m3.lock"
+    command mkdir -p "$lock"   # peer holds it, fresh, not yet PID-stamped
     (
         REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
         . "$LIB"
         ACT_MUTEX_DIR="$lock"
-        # Reproduce the window deterministically. `trap 'exit 130' TERM` is what the
-        # library installs, so running `exit 130` the instant the real mkdir returns
-        # IS the signal path, without depending on when bash chooses to deliver a
-        # signal (it defers delivery until the enclosing `while` compound finishes,
-        # which is why sending a real SIGTERM here cannot hit the window at all).
-        mkdir() {
-            command mkdir "$@" || return $?
-            exit 130
-        }
+        ACT_MUTEX_WAIT_SECS=0     # give up immediately, then run the EXIT trap
+        ACT_MUTEX_POLL_SECS=1
         acquire_act_mutex
     ) >/dev/null 2>&1
-    if [ ! -d "$lock" ]; then
+    if [ -d "$lock" ]; then
         pass "$name"
-    else
-        fail "$name" "lock dir survived the interrupt: $lock"
         rm -rf "$lock"
+    else
+        fail "$name" "the failed contender deleted a peer session's lock dir"
     fi
 }
 
-test_release_removes_unstamped_lock_after_attempt() {
-    local name="release_act_mutex reclaims an unstamped lock dir our own acquire left"
-    local lock="$SANDBOX/m4.lock"
-    command mkdir -p "$lock"          # a lock dir with NO pid file, as mid-acquire
-    (
-        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
-        . "$LIB"
-        ACT_MUTEX_DIR="$lock"
-        _ACT_MUTEX_ATTEMPTED=1        # this shell was inside acquire_act_mutex
-        release_act_mutex
-    ) >/dev/null 2>&1
-    if [ ! -d "$lock" ]; then
-        pass "$name"
-    else
-        fail "$name" "unstamped lock dir survived release: $lock"
-        rm -rf "$lock"
-    fi
-}
-
-test_release_leaves_unstamped_lock_we_never_attempted() {
-    local name="control: release does NOT touch an unstamped lock when we never tried to acquire"
+test_release_leaves_lock_we_do_not_own() {
+    local name="control: release_act_mutex never removes a lock it does not own"
     local lock="$SANDBOX/m5.lock"
     command mkdir -p "$lock"
     (
         REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
         . "$LIB"
         ACT_MUTEX_DIR="$lock"
-        release_act_mutex             # _ACT_MUTEX_ATTEMPTED deliberately unset
+        release_act_mutex             # _ACT_MUTEX_OWNED deliberately unset
     ) >/dev/null 2>&1
     if [ -d "$lock" ]; then
         pass "$name"
         rm -rf "$lock"
     else
-        fail "$name" "release deleted a peer session's in-flight lock dir"
+        fail "$name" "release deleted a lock dir this shell never owned"
     fi
+}
+
+test_unstamped_lock_expires_by_staleness() {
+    local name="an unstamped lock older than the 120s grace window is reaped by a waiter"
+    local lock="$SANDBOX/m6.lock"
+    command mkdir -p "$lock"
+    # Backdate well past the -mmin +2 window. A fixed past timestamp keeps this
+    # working on both BSD and GNU touch without date-arithmetic flags.
+    touch -t 202001010000 "$lock"
+    local rc
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$lock"
+        ACT_MUTEX_WAIT_SECS=0
+        ACT_MUTEX_POLL_SECS=1
+        acquire_act_mutex             # must reap the stale dir, then take it
+    ) >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        pass "$name"
+    else
+        fail "$name" "waiter did not reclaim a stale unstamped lock; acquire rc=$rc"
+    fi
+    rm -rf "$lock"
+}
+
+test_mid_acquire_leak_is_bounded_by_stale_expiry() {
+    local name="an interrupt right after mkdir leaks a lock, but staleness bounds it"
+    local lock="$SANDBOX/m4.lock"
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$lock"
+        # `trap 'exit 130' TERM` is what the library installs, so running `exit 130`
+        # the instant the real mkdir returns IS the signal path. A real SIGTERM
+        # cannot reach this window: bash defers delivery until the enclosing `while`
+        # compound finishes, by which point the ownership flag is already set.
+        mkdir() {
+            command mkdir "$@" || return $?
+            exit 130
+        }
+        acquire_act_mutex
+    ) >/dev/null 2>&1
+
+    # The leak is EXPECTED and accepted: deleting it would mean deleting a dir we
+    # cannot prove is ours, which is the bug this replaced.
+    if [ ! -d "$lock" ]; then
+        fail "$name" "expected the interrupted acquire to leak an unstamped dir"
+        return 0
+    fi
+    # What must hold is that the leak self-heals: a later waiter reaps it once it
+    # ages past the grace window.
+    touch -t 202001010000 "$lock"
+    local rc
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$lock"
+        ACT_MUTEX_WAIT_SECS=0
+        ACT_MUTEX_POLL_SECS=1
+        acquire_act_mutex
+    ) >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        pass "$name"
+    else
+        fail "$name" "leaked lock was not reclaimable by stale expiry; acquire rc=$rc"
+    fi
+    rm -rf "$lock"
 }
 
 # ── Finding 4: ACT_JOBS parsing ───────────────────────────────────────────
@@ -415,9 +472,10 @@ test_run_parallel_refuses_more_groups_than_window
 echo "--- finding 2: mutex ---"
 test_mutex_trap_installed_before_mkdir
 test_mutex_failed_pid_write_is_acquisition_failure
-test_mutex_no_leak_on_signal_right_after_mkdir
-test_release_removes_unstamped_lock_after_attempt
-test_release_leaves_unstamped_lock_we_never_attempted
+test_contender_timeout_leaves_peer_lock_intact
+test_release_leaves_lock_we_do_not_own
+test_unstamped_lock_expires_by_staleness
+test_mid_acquire_leak_is_bounded_by_stale_expiry
 echo "--- finding 3: exit-code override ---"
 test_override_rejects_forged_marker_on_exit42
 test_override_rejects_signal_exit
@@ -426,6 +484,7 @@ test_override_accepts_genuine_cleanup_error
 test_override_rejects_failure_before_success
 test_override_forgives_trailing_cleanup_error
 test_override_rejects_job_required_failed_phrase
+test_residual_forged_marker_with_non_job_error_is_forgiven
 echo "--- harness integrity ---"
 test_harness_scrubs_act_mutex_held
 echo "--- finding 4: ACT_JOBS parsing ---"

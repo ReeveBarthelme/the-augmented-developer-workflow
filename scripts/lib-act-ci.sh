@@ -300,6 +300,21 @@ run_act_job() {
     # A bare "Error: ..." line is deliberately NOT disqualifying. "Error: unable to
     # remove container" after a clean run is the exact cleanup case this override
     # exists for; treating every "Error:" as fatal would delete the whole feature.
+    #
+    # KNOWN RESIDUAL, accepted on purpose. A job whose own step prints
+    # "🏁  Job succeeded" on stdout, in a run whose act error text never contains the
+    # word "Job", is forgiven. The printed marker is byte-identical to act's real
+    # status line, so no log-scraping predicate can separate them; closing this needs
+    # act to emit a machine-readable result, which it does not.
+    #
+    # Why keep the override at all: act 0.2.84 exits 1 for a container cleanup error
+    # just as it does for a job failure, so removing it brings back false reds on
+    # every run where Docker is slow to release a volume. Why the residual is
+    # tolerable: this is a self-hosted pre-merge gate, so a developer who prints that
+    # marker to dodge it is only sabotaging their own branch, and CI still runs the
+    # real workflows. The behavior is pinned by the test named
+    # "RESIDUAL: forged marker + non-Job error is forgiven (documented)" so changing
+    # it has to be a deliberate act.
     if [[ $exit_code -eq 1 && -f "$logfile" ]]; then
         if grep -qF '🏁  Job succeeded' "$logfile" \
            && ! grep -qF '🏁  Job failed' "$logfile" \
@@ -866,11 +881,6 @@ ACT_MUTEX_DIR="${ACT_MUTEX_DIR:-${TMPDIR:-/tmp}/act-ci-global.lock}"
 # parent's lock.
 _ACT_MUTEX_OWNED=""
 
-# Set as soon as acquire_act_mutex is entered. It is what makes the unstamped-lock
-# recovery in release_act_mutex safe: only a shell that actually tried to acquire may
-# clean up a lock dir whose ownership it cannot prove.
-_ACT_MUTEX_ATTEMPTED=""
-
 _act_mutex_reap_if_stale() {
     local holder
     holder=$(cat "${ACT_MUTEX_DIR}/pid" 2>/dev/null || true)
@@ -906,7 +916,6 @@ acquire_act_mutex() {
     # mutex before build_act_flags would otherwise have no signal trap at all.
     trap 'cleanup_secrets; release_act_mutex' EXIT
     trap 'exit 130' INT TERM HUP
-    _ACT_MUTEX_ATTEMPTED=1
     # A caller-supplied ACT_MUTEX_DIR splits sessions into separate lock namespaces,
     # which also splits the port reservation this mutex is what protects.
     if [[ -n "${ACT_MUTEX_DIR_OVERRIDDEN:-}" ]]; then
@@ -951,8 +960,20 @@ acquire_act_mutex() {
 }
 
 release_act_mutex() {
-    # Ownership flag first: it is the only thing that is true during the window
-    # between mkdir and the pid write.
+    # PROVEN OWNERSHIP is the only safe predicate for deleting this dir, and there
+    # are exactly two proofs: _ACT_MUTEX_OWNED, set in the same compound statement as
+    # our own successful mkdir, or a PID stamp that is ours.
+    #
+    # "The dir exists and carries no PID stamp" is NOT a proof, even from a shell
+    # that was itself inside acquire_act_mutex. A contender that times out or takes a
+    # signal while waiting satisfies that test, and the unstamped dir it sees belongs
+    # to a PEER that is between its mkdir and its PID write. Deleting it there hands
+    # the lock to two sessions at once. That reclaim was tried and reverted.
+    #
+    # The cost is a narrow leak: a process killed between mkdir returning and the
+    # flag assignment leaves an unstamped dir. That is bounded, not permanent, by the
+    # 120s unstamped-dir branch in _act_mutex_reap_if_stale, which the next waiter
+    # runs. A bounded wait beats two sessions believing they hold the same lock.
     if [[ "${_ACT_MUTEX_OWNED:-}" == "1" ]]; then
         rm -rf "$ACT_MUTEX_DIR"
         _ACT_MUTEX_OWNED=""
@@ -960,16 +981,6 @@ release_act_mutex() {
         return 0
     fi
     if [[ "$(cat "${ACT_MUTEX_DIR}/pid" 2>/dev/null)" == "$$" ]]; then
-        rm -rf "$ACT_MUTEX_DIR"
-        unset ACT_MUTEX_HELD
-        return 0
-    fi
-    # Last resort: a lock dir carrying no PID stamp, seen by a shell that WAS inside
-    # acquire_act_mutex. A genuine holder writes its PID immediately after mkdir, so
-    # an unstamped dir at our exit can only be the one we took microseconds before an
-    # interrupt arrived. _ACT_MUTEX_ATTEMPTED is what keeps this from deleting a peer
-    # session's in-flight lock: a shell that never tried to acquire never gets here.
-    if [[ -n "${_ACT_MUTEX_ATTEMPTED:-}" && -d "$ACT_MUTEX_DIR" && ! -s "${ACT_MUTEX_DIR}/pid" ]]; then
         rm -rf "$ACT_MUTEX_DIR"
         unset ACT_MUTEX_HELD
     fi
