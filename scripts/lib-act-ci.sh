@@ -253,7 +253,12 @@ run_act_job() {
     if [[ -z "$job_port" ]]; then
         local sbase
         sbase=$(act_port_base)
-        job_port=$(find_free_port "$sbase" "$(( sbase + ACT_PORT_WINDOW ))")
+        # find_free_port returns non-zero on exhaustion. Without this `if` the
+        # assignment's failure would abort the entry script's `set -e` silently.
+        if ! job_port=$(find_free_port "$sbase" "$(( sbase + ACT_PORT_WINDOW ))"); then
+            err "${label} — no free artifact-server port in this session's window [$sbase, $(( sbase + ACT_PORT_WINDOW )))"
+            return 1
+        fi
     fi
     local job_artifact_dir
     job_artifact_dir=$(mktemp -d "${TMPDIR:-/tmp}/act-artifacts-XXXXXXXX")
@@ -277,11 +282,24 @@ run_act_job() {
     local elapsed=$(( $(date +%s) - start_time ))
 
     # act returns non-zero for Docker CLEANUP failures (a volume delete timing out)
-    # even when the job itself succeeded. Read the actual outcome out of the log and
-    # override. Anchored to act's emoji status line so test stdout containing the words
-    # "Job succeeded" cannot forge a pass.
-    if [[ $exit_code -ne 0 && -f "$logfile" ]]; then
-        if grep -qF '🏁  Job succeeded' "$logfile" && ! grep -qF '🏁  Job failed' "$logfile"; then
+    # even when the job itself succeeded. This override exists for that one case only.
+    #
+    # It is restricted to exit code 1. act gives a cleanup failure no distinct code,
+    # so 1 (its generic error exit) is the only value that can plausibly be one.
+    # Every other code is a real failure that must survive: a non-act binary exiting
+    # 42, and anything above 128, which is a signal death that can land AFTER act has
+    # already printed a success line.
+    #
+    # The LAST job-status line decides the outcome. A success marker anywhere else in
+    # the log can come from a step's own stdout or from an earlier job in a multi-job
+    # run. Residual: a step that prints the marker as the final status line while act
+    # itself exits 1 can still forge a pass. Closing that needs act to emit a machine
+    # readable result, which it does not.
+    if [[ $exit_code -eq 1 && -f "$logfile" ]]; then
+        local last_status
+        # `|| true`: with no match grep exits 1, which under pipefail would abort here.
+        last_status=$(grep -E '🏁  Job (succeeded|failed)' "$logfile" | tail -1 || true)
+        if [[ "$last_status" == *'🏁  Job succeeded'* ]]; then
             warn "${label} — act cleanup error (Docker volume timeout), but the job succeeded"
             exit_code=0
         fi
@@ -305,6 +323,49 @@ run_act_job() {
     return $exit_code
 }
 
+# An ACT_JOBS entry: workflow.yml:job, with an optional :Label third field.
+# Anchored and colon-free within each field, so a bare `ci.yml` cannot be read as both
+# the workflow AND the job (`${spec#*:}` returns the whole string when there is no
+# colon, which is how that silently happened), and a `:job` with no workflow is caught.
+ACT_JOB_SPEC_RE='^[^:[:space:]]+\.ya?ml:[^:[:space:]]+(:[^:[:space:]]+)?$'
+
+# parse_act_jobs "<raw ACT_JOBS value>" — split on ANY whitespace, validate, echo the
+# accepted specs one per line. Returns 1 and names every bad token instead.
+#
+# The split must cover newlines. `read -r -a` stops at the first one, so a multi-line
+# ACT_JOBS silently ran only its first entry and the gate shrank without saying so.
+# Nothing is echoed when validation fails, so a caller cannot consume a partial list.
+parse_act_jobs() {
+    local raw="${1:-}"
+    local -a tokens=() good=() bad=()
+    local t
+    # Split by rewriting every space and tab to a newline and reading line by line,
+    # rather than by unquoted expansion. That avoids two traps at once: an unquoted
+    # `$raw` globs a spec containing `*` against the cwd, and it depends on the shell
+    # doing word splitting at all, which zsh does not.
+    while IFS= read -r t; do
+        [[ -n "$t" ]] || continue
+        tokens+=("$t")
+    # The trailing newline is load-bearing: without it `read` hits EOF on the final
+    # token, returns non-zero, and the loop discards that token. `printf '%s'` alone
+    # silently dropped the LAST spec of every list.
+    done < <(printf '%s\n' "$raw" | tr ' \t' '\n\n')
+    for t in ${tokens[@]+"${tokens[@]}"}; do
+        if [[ "$t" =~ $ACT_JOB_SPEC_RE ]]; then
+            good+=("$t")
+        else
+            bad+=("$t")
+        fi
+    done
+    if [[ ${#bad[@]} -gt 0 ]]; then
+        err "Malformed ACT_JOBS entries (want workflow.yml:job, optionally :Label):"
+        for t in "${bad[@]}"; do err "  bad token: '$t'"; done
+        return 1
+    fi
+    for t in ${good[@]+"${good[@]}"}; do printf '%s\n' "$t"; done
+    return 0
+}
+
 # run_act_jobs "<spec> [<spec> ...]" — each spec is workflow.yml:job[:Label]
 # Runs them serially and returns 1 if any failed.
 run_act_jobs() {
@@ -312,20 +373,22 @@ run_act_jobs() {
     local failed=0 spec wf job label
     if [[ ${#specs[@]} -eq 0 ]]; then
         err "No act jobs configured. Set ACT_JOBS in the Makefile, e.g."
-        err '  ACT_JOBS = ci.yml:test:"Unit tests" ci.yml:lint'
+        err '  ACT_JOBS = ci.yml:test:Unit-tests ci.yml:lint'
         return 1
     fi
     for spec in "${specs[@]}"; do
+        # Re-validate here too: this function is reachable directly, not only through
+        # parse_act_jobs, and an unvalidated spec is what produced the bare-token bug.
+        if [[ ! "$spec" =~ $ACT_JOB_SPEC_RE ]]; then
+            err "Malformed ACT_JOBS entry: '$spec' (want workflow.yml:job[:Label])"
+            failed=1
+            continue
+        fi
         wf="${spec%%:*}"
         local rest="${spec#*:}"
         job="${rest%%:*}"
         label="${rest#*:}"
         [[ "$label" == "$rest" ]] && label="$wf/$job"
-        if [[ -z "$wf" || -z "$job" ]]; then
-            err "Malformed ACT_JOBS entry: '$spec' (want workflow.yml:job[:Label])"
-            failed=1
-            continue
-        fi
         if [[ ! -f "$REPO_ROOT/.github/workflows/$wf" ]]; then
             err "Workflow not found: .github/workflows/$wf (from ACT_JOBS entry '$spec')"
             failed=1
@@ -346,6 +409,13 @@ run_act_jobs() {
 # not Docker containers: act-* container names cannot be mapped back to the dead PID
 # and a blanket `docker rm` would destroy a live run's containers.
 reclaim_orphaned_act_ports() {
+    # Without pgrep this function cannot see anything and would silently no-op,
+    # reading as "no orphans found". Say so instead.
+    if ! command -v pgrep &>/dev/null; then
+        warn "pgrep not found — cannot detect orphaned act processes, so their ports stay reserved."
+        warn "Install it (it ships with procps on Linux, and with macOS) to re-enable reaping."
+        return 0
+    fi
     local pid ppid killed=0
     # Exact process-name match: *act* would also match react, redact, compact.
     for pid in $(pgrep -x act 2>/dev/null); do
@@ -385,9 +455,16 @@ act_port_base() {
 # find_free_port BASE [LIMIT [EXCLUDE...]]: first free port in [BASE, LIMIT) that is
 # neither listening nor in EXCLUDE. LIMIT is an EXCLUSIVE upper bound; omit it for an
 # unbounded scan. The bounded scan NEVER returns a port >= LIMIT, so a start at the
-# boundary cannot leak into a neighbour's window. On exhaustion it returns BASE, keeping
-# any unavoidable collision INSIDE the window (act errors locally) rather than escaping
-# into another session's reservation.
+# boundary cannot leak into a neighbour's window.
+#
+# On exhaustion it prints NOTHING and returns 1. It used to return BASE, which handed
+# two callers the same port and reproduced the "everything PASSED, exit 1" confusion
+# the window exists to prevent. Callers must test the return value; an assignment like
+# `p=$(find_free_port ...)` silently swallows it under `set -e`.
+#
+# Without lsof a port cannot be checked for a listener at all, so this fails closed and
+# returns 2 rather than handing out an unverified port. ACT_ALLOW_UNVERIFIED_PORTS=1
+# opts back in for an environment where installing lsof is not possible.
 #
 # EXCLUDE lets a caller reserve ports it has handed out but that are not bound yet:
 # lsof cannot see a sibling act that has not started, so in-process exclusion is what
@@ -398,22 +475,37 @@ find_free_port() {
     local excluded=()
     [[ $# -gt 2 ]] && excluded=("${@:3}")
 
+    # Diagnostics go to stderr: this function's stdout IS the port value, and a
+    # warning printed there would be captured as part of it.
+    local have_lsof=1
+    command -v lsof &>/dev/null || have_lsof=0
+    if [[ "$have_lsof" -eq 0 ]]; then
+        if [[ "${ACT_ALLOW_UNVERIFIED_PORTS:-}" == "1" ]]; then
+            warn "lsof not found — handing out ports UNVERIFIED (ACT_ALLOW_UNVERIFIED_PORTS=1)." >&2
+        else
+            err "lsof not found, so no port can be checked for an existing listener."
+            err "Install it (brew install lsof), or set ACT_ALLOW_UNVERIFIED_PORTS=1 to accept the risk."
+            return 2
+        fi
+    fi
+
     if [[ -n "$limit" ]]; then
         while [[ "$port" -lt "$limit" ]]; do
             local skip=0 ex
             for ex in ${excluded[@]+"${excluded[@]}"}; do
                 [[ "$ex" == "$port" ]] && { skip=1; break; }
             done
-            if [[ "$skip" -eq 0 ]] && \
-               ! { command -v lsof &>/dev/null && lsof -ti "tcp:$port" &>/dev/null; }; then
-                echo "$port"; return 0
+            if [[ "$skip" -eq 0 ]]; then
+                if [[ "$have_lsof" -eq 0 ]] || ! lsof -ti "tcp:$port" &>/dev/null; then
+                    echo "$port"; return 0
+                fi
             fi
             port=$(( port + 1 ))
         done
-        echo "$1"; return 0   # window exhausted — stay in-window (return base)
+        return 1   # window exhausted — fail closed, never reuse the base port
     fi
 
-    if command -v lsof &>/dev/null; then
+    if [[ "$have_lsof" -eq 1 ]]; then
         while lsof -ti "tcp:$port" &>/dev/null; do
             port=$(( port + 1 ))
         done
@@ -431,8 +523,17 @@ run_parallel() {
     local fn="$1"; shift
     local groups=("$@")
     local pids=()
-    local port
     local failed=0
+
+    # Fail closed BEFORE anything is forked. This session's window holds exactly
+    # ACT_PORT_WINDOW ports, so a K-th group past that has no port of its own and
+    # would have shared one with an earlier group, which is the bind collision the
+    # window exists to prevent. Refusing is better than a half-launched run.
+    if [[ ${#groups[@]} -gt $ACT_PORT_WINDOW ]]; then
+        err "${#groups[@]} parallel groups requested but this session's port window holds only $ACT_PORT_WINDOW."
+        err "Raise ACT_PORT_WINDOW in scripts/lib-act-ci.sh, or run with --serial."
+        return 1
+    fi
 
     reclaim_orphaned_act_ports
 
@@ -444,6 +545,20 @@ run_parallel() {
     base=$(act_port_base)
     window_end=$(( base + ACT_PORT_WINDOW ))
 
+    # Allocate EVERY port up front. Allocating inside the fork loop means an
+    # exhaustion on group 3 leaves groups 1 and 2 already running with no way to
+    # reach them; here nothing has started yet when we give up.
+    local ports=() p ai
+    for (( ai = 0; ai < ${#groups[@]}; ai++ )); do
+        if ! p=$(find_free_port "$base" "$window_end" ${used[@]+"${used[@]}"}); then
+            err "No free artifact-server port left in [$base, $window_end) for ${#groups[@]} parallel groups."
+            err "Another session may hold ports in this window; retry, or run with --serial."
+            return 1
+        fi
+        used+=("$p")
+        ports+=("$p")
+    done
+
     local prev_int_trap prev_term_trap
     prev_int_trap=$(trap -p INT)
     prev_term_trap=$(trap -p TERM)
@@ -451,14 +566,12 @@ run_parallel() {
     trap '__parallel_cleanup INT "${pids[@]}"' INT
     trap '__parallel_cleanup TERM "${pids[@]}"' TERM
 
-    local group
-    for group in "${groups[@]}"; do
-        port=$(find_free_port "$base" "$window_end" ${used[@]+"${used[@]}"})
-        used+=("$port")
+    local gi
+    for gi in "${!groups[@]}"; do
         # export is required: & forks a subshell, which only inherits exported vars.
-        export ACT_ARTIFACT_PORT=$port
+        export ACT_ARTIFACT_PORT="${ports[$gi]}"
         # shellcheck disable=SC2086 # group is an intentionally word-split job spec list
-        "$fn" $group &
+        "$fn" ${groups[$gi]} &
         pids+=($!)
     done
     unset ACT_ARTIFACT_PORT  # do not leak into later serial calls
@@ -625,6 +738,29 @@ run_shell_checks() {
         fi
     fi
 
+    # Plain-bash `*.test.sh` suites under the same dirs. These are NOT bats files and
+    # nothing else would run them, so a suite could sit in the tree passing shellcheck
+    # while never being executed. Each must exit 0 on success.
+    local sh_tests=() t
+    if [[ ${#dirs[@]} -gt 0 ]]; then
+        while IFS= read -r t; do
+            [[ -n "$t" ]] && sh_tests+=("$t")
+        done < <(find "${dirs[@]}" -name '*.test.sh' -type f 2>/dev/null | sort)
+    fi
+    if [[ ${#sh_tests[@]} -eq 0 ]]; then
+        log "shell tests — no *.test.sh files found, skipping"
+    else
+        log "${BOLD}Running: ${#sh_tests[@]} shell test suite(s)${NC}"
+        for t in "${sh_tests[@]}"; do
+            if bash "$t"; then
+                ok "$(basename "$t") — ${GREEN}PASSED${NC}"
+            else
+                err "$(basename "$t") — ${RED}FAILED${NC}"
+                failed=1
+            fi
+        done
+    fi
+
     local bats_dirs=()
     for d in $BATS_DIRS; do
         [[ -d "$REPO_ROOT/$d" ]] && \
@@ -712,6 +848,13 @@ check_git_hooks_path() {
 # ─────────────────────────────────────────────────────────────────────────
 ACT_MUTEX_DIR="${ACT_MUTEX_DIR:-${TMPDIR:-/tmp}/act-ci-global.lock}"
 
+# Ownership flag, set the instant mkdir returns. The pid FILE cannot prove ownership,
+# because between mkdir and the pid write there is a window where the lock is held and
+# unstamped; a cleanup running then would walk away and leak it for the whole 120s
+# grace period. Deliberately NOT exported, so a forked child never releases its
+# parent's lock.
+_ACT_MUTEX_OWNED=""
+
 _act_mutex_reap_if_stale() {
     local holder
     holder=$(cat "${ACT_MUTEX_DIR}/pid" 2>/dev/null || true)
@@ -738,6 +881,15 @@ acquire_act_mutex() {
     if [[ -n "${ACT_MUTEX_HELD:-}" ]] && kill -0 "$ACT_MUTEX_HELD" 2>/dev/null; then
         return 0
     fi
+    # Arm cleanup BEFORE the mkdir loop. Installing it afterwards left a window in
+    # which the lock dir existed with no trap behind it, so a Ctrl+C there leaked the
+    # lock and every other session waited out the 120s stale grace period.
+    # release_act_mutex is a no-op until _ACT_MUTEX_OWNED is set, so arming this early
+    # is safe even on the paths where we never acquire.
+    # INT/TERM/HUP exit explicitly so the EXIT trap runs; targets that acquire the
+    # mutex before build_act_flags would otherwise have no signal trap at all.
+    trap 'cleanup_secrets; release_act_mutex' EXIT
+    trap 'exit 130' INT TERM HUP
     local waited=0 announced=0
     local wait_max="${ACT_MUTEX_WAIT_SECS:-7200}" poll="${ACT_MUTEX_POLL_SECS:-15}"
     while ! mkdir "$ACT_MUTEX_DIR" 2>/dev/null; do
@@ -754,16 +906,34 @@ acquire_act_mutex() {
         sleep "$poll"
         waited=$(( waited + poll ))
     done
-    echo "$$" > "${ACT_MUTEX_DIR}/pid"
+    # We hold the lock from here. Record that before the pid write, so a cleanup
+    # firing mid-write still knows the dir is ours to remove.
+    _ACT_MUTEX_OWNED=1
+    # A failed pid stamp is an ACQUISITION FAILURE, not a warning. An unstamped lock
+    # cannot be reaped by another session's liveness check until the grace period
+    # expires, so returning success here would hand out a lock nobody can recover.
+    # rmdir, not rm -rf: the dir is empty, and rm -rf on an unreadable dir is
+    # platform-dependent.
+    if ! echo "$$" > "${ACT_MUTEX_DIR}/pid" 2>/dev/null; then
+        err "Took the act mutex but could not write ${ACT_MUTEX_DIR}/pid — releasing it."
+        rm -f "${ACT_MUTEX_DIR}/pid" 2>/dev/null
+        rmdir "$ACT_MUTEX_DIR" 2>/dev/null
+        _ACT_MUTEX_OWNED=""
+        return 1
+    fi
     export ACT_MUTEX_HELD="$$"
-    # The same trap build_act_flags registers. Safe before the flags are built, because
-    # cleanup_secrets is a no-op until MERGED_SECRETS_FILE exists. Needed for targets
-    # that acquire the mutex before build_act_flags runs.
-    trap 'cleanup_secrets; release_act_mutex' EXIT
     return 0
 }
 
 release_act_mutex() {
+    # Ownership flag first: it is the only thing that is true during the window
+    # between mkdir and the pid write.
+    if [[ "${_ACT_MUTEX_OWNED:-}" == "1" ]]; then
+        rm -rf "$ACT_MUTEX_DIR"
+        _ACT_MUTEX_OWNED=""
+        unset ACT_MUTEX_HELD
+        return 0
+    fi
     if [[ "$(cat "${ACT_MUTEX_DIR}/pid" 2>/dev/null)" == "$$" ]]; then
         rm -rf "$ACT_MUTEX_DIR"
         unset ACT_MUTEX_HELD

@@ -33,15 +33,24 @@ export REPO_ROOT
 # shellcheck source=lib-act-ci.sh
 source "$(dirname "$0")/lib-act-ci.sh"
 
-# Split ACT_JOBS into an array. Word splitting is the intended parse here.
-read -r -a ACT_JOB_SPECS <<< "${ACT_JOBS:-}"
-
 run_target() {
     local target="$1"
     local failed=0
 
     case "$target" in
         jobs)
+            # Parse and validate BEFORE check_deps, so a typo fails in a second
+            # without needing Docker and without dropping .act-secrets/.act-env.
+            # parse_act_jobs handles newlines in the value and rejects a token that
+            # is not workflow.yml:job[:Label].
+            local specs_raw line
+            local -a ACT_JOB_SPECS=()
+            if ! specs_raw=$(parse_act_jobs "${ACT_JOBS:-}"); then
+                return 1
+            fi
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && ACT_JOB_SPECS+=("$line")
+            done <<< "$specs_raw"
             check_deps || return 1
             build_act_flags
             # Group the specs by workflow FILE, then run one act process per group
