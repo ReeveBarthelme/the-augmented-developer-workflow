@@ -83,6 +83,8 @@ For each friction point:
 3. If NO → log as a memory entry only (counts toward 3-entry budget)
 4. If YES → eligible for rule proposal in 4c
 
+The delegation scorecard's trailing-10 trend is a pre-computed frequency signal: run `.claude/scripts/delegation-scorecard.sh` and check "Violating sessions." **>=3 violating sessions in the trailing 10** meets the threshold above and is eligible for a 4c rule proposal — propose arming tiering enforcement (`touch .claude/metrics/tiering-enforce`, run from the MAIN repo checkout, not a worktree — the path is relative to the main repo root, not your CWD; user approval required before touching it).
+
 ### 4c. Propose Rules (Gated)
 
 **Only for patterns meeting the 3-session threshold AND with trend "stable" or "worsening".**
@@ -102,6 +104,33 @@ TARGET: [CLAUDE.md | memory/ | .claude/skills/]
 **Max 1 rule proposal per session.** Pick the highest-impact one.
 **Wait for user approval** before writing anything. Never auto-write to CLAUDE.md or skills.
 
+### 4c-bis. Standing default: apply, don't ask
+
+If your user has restated "do it if it makes sense and does not bloat" across
+several sessions, that is a standing instruction, not a per-session decision.
+Encode it this way:
+
+| Target | Action |
+|--------|--------|
+| `memory/`, `.claude/handoff/` | **Apply without asking** if it passes the two tests below |
+| `scripts/`, `.claude/hooks/`, `CLAUDE.md`, `.claude/skills/`, new rules | Still require explicit approval (unchanged) |
+
+`scripts/` was in the auto-apply column in the first draft of this section and was
+moved back: unattended writes to CI tooling are exactly the brittleness this repo
+keeps getting bitten by, and the review that caught it was reviewing a PR fixing a CI
+hook that had shipped two silent no-op bugs. Docs and memory are recoverable; a
+quietly-edited gate is not. (Architecture review seat, a prior incident.)
+
+Both tests must pass, or drop it silently rather than surfacing it:
+
+1. **Net-token-saving** — name the specific waste it removes. A change justified only
+   as "clearer" or "more complete" fails. Resident docs are read every turn of every
+   future session, so added lines are a recurring cost, not a one-time one.
+2. **In budget** — respect the Phase 2 caps. If it needs new lines, prune first.
+
+Do not narrate skipped candidates. A dropped suggestion the user never sees is the
+point; listing what you chose not to do reintroduces the cost you just avoided.
+
 ### 4d. Suggest Automation
 
 Identify repetitive patterns that could become commands, hooks, or scripts.
@@ -117,4 +146,5 @@ Only suggest if the pattern occurred 3+ times this session or across sessions.
 | Memories | [new/updated, count vs budget] |
 | Rules proposed | [count, targets, awaiting approval] |
 | Automation suggested | [count, types] |
+| Delegation | [run `.claude/scripts/delegation-scorecard.sh`, paste the scorecard summary] |
 | Memory health | [MEMORY.md: N/180 lines, topic files: N/15] |

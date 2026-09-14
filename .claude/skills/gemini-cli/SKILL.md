@@ -1,6 +1,6 @@
 ---
 name: gemini-cli
-description: Wield Google's Gemini CLI as a powerful auxiliary tool for code generation, review, analysis, and web research. Use when tasks benefit from a second AI perspective, current web information via Google Search, codebase architecture analysis, or parallel code generation. Also use when user explicitly requests Gemini operations.
+description: Wield Google's Gemini CLI for web research and Google Search grounding (its current, non-demoted role). Use when a task needs current internet information, latest library/API versions, or other live web-grounded facts. Code generation, code review, security audits, test-generation, and codebase analysis of this repo's proprietary code were demoted 2026-07-16 to emergency-manual-only — use Claude or Codex for those instead. Also use when the user explicitly requests Gemini operations.
 allowed-tools:
   - Bash
   - Read
@@ -11,46 +11,61 @@ allowed-tools:
 
 # Gemini CLI Integration Skill
 
-This skill enables Claude Code to effectively orchestrate Gemini CLI with Gemini 3.1 Pro for code generation, review, analysis, and specialized tasks.
+This skill enables Claude Code to effectively orchestrate Gemini CLI for web research and Google Search grounding — its primary, current use case. Code-related uses (generation, review, analysis, test-gen) were demoted 2026-07-16 to emergency-manual-only; see the routing table immediately below.
+
+## When to reach for Gemini vs Claude/Codex (READ FIRST — cost + data routing)
+
+**Demoted 2026-07-16**: Gemini is now **web-search/grounding ONLY**. No code review, no design-vote, no diffs of proprietary code. Reviews (security and design-vote) run on Claude/Codex subscription seats instead — see `orchestrate-review-deploy` SKILL.md. Gemini's *unique* value remains **Google Search grounding** (current web info); it is a metered paid API, while Claude (this session) and Codex are subscription-covered and free at the margin. Route by task type:
+
+| Task | Use | Why |
+|------|-----|-----|
+| **Web-grounded research** (current docs, "latest X", library API) | **Gemini** (`--yolo`, Google Search) | Only Gemini has live search grounding |
+| **Independent security/review dissent** | Claude security subagent, then Codex `gpt-5.6-sol`/`gpt-5.6-terra` design-vote | Gemini no longer serves review seats (see demotion note above) |
+| **Repo-aware code analysis / generation / refactor / test-gen** | **Claude or Codex, NOT Gemini** | No search benefit; free at margin; keeps proprietary code off a metered API |
+
+**Do not send proprietary code to Gemini for plain analysis** — it has no search advantage there and it's the account that spends money. Routing, not model downgrades, is the biggest cost reduction available here. On one project it removed ~97% of a daily Gemini bill that was interactive code analysis with no search need.
 
 ## Model Selection
 
-| Model ID | Use Case | Notes |
-|----------|----------|-------|
-| `auto` | **Default** - Auto-routes to best available model (currently 3.1 Pro) | Recommended for most tasks |
-| `gemini-3.1-pro-preview` | Explicit 3.1 Pro - Complex analysis, code review, documentation | Latest model (Feb 2026), extended thinking |
-| `gemini-2.5-flash` | Simple tasks, high-volume operations | Faster, lower cost |
+**Always pin an explicit model — never use `-m auto` or `-m latest`, and pin GA model IDs only.** ⚠️ "gemini-3-flash" (bare, no suffix) is NOT a real API model — the CLI silently serves its default `gemini-3.5-flash` instead (found 2026-07-10; it burned the free-tier bucket and voided an A/B). `-preview` models get retired ("gemini-3-pro-preview" died) and "gemini-3-flash-preview" failed the N=5 recall A/B 0/5 vs 3.5-flash's 3/5. Default to `gemini-3.1-flash-lite` for routine work; escalate to `gemini-3.5-flash` for hard reasoning and review seats.
 
-**Recommended**: Use `-m auto` for most tasks (routes to Gemini 3.1 Pro). Use `gemini-3.1-pro-preview` explicitly when you need to pin the model.
+| Seat / Use Case | Primary Model | Fallback |
+|-----------------|---------------|---------|
+| `security` gate (strict) — **demoted 2026-07-16, emergency manual use only** | `gemini-3.5-flash` | `gemini-3.1-flash-lite` → exit 75 |
+| `design-vote` — **demoted 2026-07-16, emergency manual use only** | `gemini-3.5-flash` | `gemini-3.1-flash-lite` → exit 75 |
+| `investigation` / advisory | `gemini-3.1-flash-lite` | `gemini-3.5-flash` → exit 75 |
+| Direct CLI (ad-hoc) | `gemini-3.1-flash-lite` | escalate to `gemini-3.5-flash` explicitly only when needed |
+
+The `security` and `design-vote` rows above are the pins still wired in `.claude/scripts/gemini-with-fallback.sh` for emergency manual invocation — the *default* review flow no longer calls them (security → Claude subagent, design-vote → Codex `gpt-5.6-terra`/`gpt-5.6-sol`; see `orchestrate-review-deploy` SKILL.md).
+
+Select the seat via `REVIEWER_SEAT` env var. The wrapper reads this automatically.
+
+**Exit-code contract** (wrapper scripts):
+
+| Code | Meaning | Action |
+|------|---------|--------|
+| `0` | Success | — |
+| `75` | Quota exhausted | Wait; will reset. Claude security-subagent fallback available. |
+| `78` | **Billing failure** | Fix GCP billing at console.cloud.google.com/billing — do NOT retry |
+
+**Spend log**: every wrapper invocation appends a JSON line to `~/.gemini/spend.jsonl` (override via `SPEND_LOG` env). View a summary:
+```bash
+bash .claude/scripts/gemini-with-fallback.sh summarize
+bash .claude/scripts/gemini-with-fallback.sh summarize --days 7
+```
+
+**Env vars**:
+- `REVIEWER_SEAT` — seat tier (`security` / `design-vote` / `investigation` / unset)
+- `REVIEWER_RUN_ID` — run identifier for spend log (defaults to date-based string)
 
 ## When to Use This Skill
 
-### Ideal Use Cases
+### Ideal Use Cases (current — web-search/grounding only)
 
-1. **Second Opinion / Cross-Validation**
-   - Code review after writing code (different AI perspective)
-   - Security audit with alternative analysis
-   - Finding bugs Claude might have missed
-
-2. **Google Search Grounding**
+1. **Google Search Grounding**
    - Questions requiring current internet information
    - Latest library versions, API changes, documentation updates
    - Current events or recent releases
-
-3. **Codebase Architecture Analysis**
-   - Use Gemini's `codebase_investigator` tool
-   - Understanding unfamiliar codebases
-   - Mapping cross-file dependencies
-
-4. **Parallel Processing**
-   - Offload tasks while continuing other work
-   - Run multiple code generations simultaneously
-   - Background documentation generation
-
-5. **Specialized Generation**
-   - Test suite generation
-   - JSDoc/documentation generation
-   - Code translation between languages
 
 ### When NOT to Use
 
@@ -58,6 +73,16 @@ This skill enables Claude Code to effectively orchestrate Gemini CLI with Gemini
 - Tasks requiring immediate response (rate limits cause delays)
 - When context is already loaded and understood
 - Interactive refinement requiring conversation
+- Code review, security audits, code generation/refactor/test-gen, or architecture analysis of THIS repo's (proprietary) code — see "Demoted" below; use Claude or Codex instead
+
+### Demoted 2026-07-16 (emergency manual use only)
+
+These were formerly listed as "ideal use cases" for Gemini. They are demoted — proprietary code must not go to a metered external API by default. Only reach for these with explicit direction for emergency/manual fallback (see `.claude/scripts/gemini-with-fallback.sh` header, `orchestrate-review-deploy` SKILL.md):
+
+1. **Second Opinion / Cross-Validation** — code review after writing code, security audit, finding bugs. Now: Claude security subagent is the primary security seat; `/security-review` is the manual escape hatch.
+2. **Codebase Architecture Analysis** — Gemini's `codebase_investigator` tool on this repo's code. Now: Claude/Codex repo-aware analysis (via Task/Explore or `codex review`).
+3. **Parallel Processing / code generation** — running multiple code generations simultaneously. Now: Claude/Codex.
+4. **Specialized Generation** — test suite generation, JSDoc/documentation generation, code translation. Now: Claude/Codex.
 
 ## Core Instructions
 
@@ -67,14 +92,18 @@ This skill enables Claude Code to effectively orchestrate Gemini CLI with Gemini
 # Check installation
 command -v gemini || which gemini
 
-# CRITICAL: Source .env to load GEMINI_API_KEY
-if [ -f .env ]; then set -a; source .env; set +a; fi
+# Load GEMINI_API_KEY from .env ONLY if not already set in the shell —
+# a personal/local key exported in ~/.zshrc must win over the project's
+# .env key (the billed app key your application code uses).
+# Do NOT change this to an unconditional source — plain `source .env` overwrites
+# an already-exported var and silently reverts the CLI to the GCP-billed key.
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -f .env ]; then set -a; source .env; set +a; fi
 
 # Verify API key is available
 [ -n "$GEMINI_API_KEY" ] && echo "✅ GEMINI_API_KEY loaded" || echo "❌ GEMINI_API_KEY missing"
 ```
 
-**IMPORTANT**: The Gemini CLI requires `GEMINI_API_KEY` environment variable. This project stores it in `.env`. Always source `.env` before running Gemini commands.
+**IMPORTANT**: The Gemini CLI requires `GEMINI_API_KEY` environment variable. If not already exported in your shell, this project falls back to the value in `.env`. Never source `.env` unconditionally — see the guard above.
 
 ### 2. Basic Command Pattern
 
@@ -112,51 +141,55 @@ For JSON output (`-o json`), parse:
 
 ## Quick Reference Commands
 
-**⚠️ CRITICAL**: Always prefix Gemini commands with `.env` sourcing to load `GEMINI_API_KEY`:
+**⚠️ CRITICAL**: Prefix Gemini commands with the guarded `.env` fallback below (loads `GEMINI_API_KEY` only if the shell doesn't already have one — an ambient key, e.g. from `~/.zshrc`, must win over the project's GCP-billed `.env` key):
 
 ```bash
 # Standard prefix for ALL gemini commands
-if [ -f .env ]; then set -a; source .env; set +a; fi && gemini [...]
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -f .env ]; then set -a; source .env; set +a; fi && gemini [...]
 ```
 
-### Code Generation
+### Web Research (primary use case)
 ```bash
-if [ -f .env ]; then set -a; source .env; set +a; fi && gemini "Create [description] with [features]. Output complete file content." -m auto --yolo -o text
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -f .env ]; then set -a; source .env; set +a; fi && gemini "What are the latest [topic]? Use Google Search." -m gemini-3.1-flash-lite -o text
 ```
 
-### Code Review
+### Lighter Model (High-volume / simple tasks)
 ```bash
-if [ -f .env ]; then set -a; source .env; set +a; fi && gemini "Review [file] for: 1) features, 2) bugs/security issues, 3) improvements" -m auto -o text
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -f .env ]; then set -a; source .env; set +a; fi && gemini "[prompt]" -m gemini-3.1-flash-lite -o text
 ```
 
-### Bug Fixing
+### Demoted 2026-07-16 (emergency manual use only — do not use these against this repo's proprietary code by default)
+
+The recipes below predate the demotion. Reach for Claude/Codex instead (see routing table above); keep these only for a deliberate, explicitly-directed manual fallback.
+
+#### Code Generation
 ```bash
-if [ -f .env ]; then set -a; source .env; set +a; fi && gemini "Fix these bugs in [file]: [list]. Apply fixes now." -m auto --yolo -o text
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -f .env ]; then set -a; source .env; set +a; fi && gemini "Create [description] with [features]. Output complete file content." -m gemini-3.1-flash-lite --yolo -o text
 ```
 
-### Test Generation
+#### Code Review
 ```bash
-if [ -f .env ]; then set -a; source .env; set +a; fi && gemini "Generate [Jest/pytest] tests for [file]. Focus on [areas]." -m auto --yolo -o text
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -f .env ]; then set -a; source .env; set +a; fi && gemini "Review [file] for: 1) features, 2) bugs/security issues, 3) improvements" -m gemini-3.1-flash-lite -o text
 ```
 
-### Documentation
+#### Bug Fixing
 ```bash
-if [ -f .env ]; then set -a; source .env; set +a; fi && gemini "Generate JSDoc for all functions in [file]. Output as markdown." -m auto --yolo -o text
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -f .env ]; then set -a; source .env; set +a; fi && gemini "Fix these bugs in [file]: [list]. Apply fixes now." -m gemini-3.1-flash-lite --yolo -o text
 ```
 
-### Architecture Analysis
+#### Test Generation
 ```bash
-if [ -f .env ]; then set -a; source .env; set +a; fi && gemini "Use codebase_investigator to analyze this project" -m auto -o text
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -f .env ]; then set -a; source .env; set +a; fi && gemini "Generate [Jest/pytest] tests for [file]. Focus on [areas]." -m gemini-3.1-flash-lite --yolo -o text
 ```
 
-### Web Research
+#### Documentation
 ```bash
-if [ -f .env ]; then set -a; source .env; set +a; fi && gemini "What are the latest [topic]? Use Google Search." -m auto -o text
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -f .env ]; then set -a; source .env; set +a; fi && gemini "Generate JSDoc for all functions in [file]. Output as markdown." -m gemini-3.1-flash-lite --yolo -o text
 ```
 
-### Faster Model (Simple Tasks)
+#### Architecture Analysis (codebase_investigator on proprietary code)
 ```bash
-if [ -f .env ]; then set -a; source .env; set +a; fi && gemini "[prompt]" -m gemini-2.5-flash -o text
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -f .env ]; then set -a; source .env; set +a; fi && gemini "Use codebase_investigator to analyze this project" -m gemini-3.1-flash-lite -o text
 ```
 
 ## Error Handling
@@ -168,9 +201,15 @@ if [ -f .env ]; then set -a; source .env; set +a; fi && gemini "[prompt]" -m gem
   source .claude/scripts/gemini-with-fallback.sh
   gemini_with_fallback "Your prompt" -o text
   ```
-  Fallback chain: `auto` (3.1 Pro) → `gemini-3-pro-preview` → `gemini-2.5-flash`
-  Override via env vars: `GEMINI_PRIMARY_MODEL`, `GEMINI_FALLBACK_MODEL`, `GEMINI_LAST_RESORT_MODEL`
-- Use `-m gemini-2.5-flash` directly for lower priority tasks (avoids burning Pro quota)
+  Seat-tiered chains (set `REVIEWER_SEAT` before sourcing):
+  - `security` / `design-vote`: `gemini-3.5-flash` → `gemini-3.1-flash-lite` → exit 75 — **demoted 2026-07-16, emergency manual use only; the default review flow calls Claude (security) / Codex (design-vote) instead, see `orchestrate-review-deploy` SKILL.md**
+  - `investigation`: `gemini-3.1-flash-lite` → `gemini-3.5-flash` → exit 75
+  Override individual models: `GEMINI_PRIMARY_MODEL`, `GEMINI_FALLBACK_MODEL`, `GEMINI_LAST_RESORT_MODEL`
+- For **advisory/investigation** seats, prefer `reviewer-with-fallback.sh` — adds groq + ollama before Gemini:
+  ```bash
+  REVIEWER_SEAT=investigation .claude/scripts/reviewer-with-fallback.sh "Your prompt" -o text
+  ```
+- Use `-m gemini-3.1-flash-lite` directly for lower priority tasks (avoids burning Pro quota)
 - Run in background for long operations
 
 ### Command Failures
@@ -188,6 +227,8 @@ Always verify Gemini's output:
 ## Integration Workflow
 
 ### Standard Generate-Review-Fix Cycle
+
+**Demoted 2026-07-16 (emergency manual use only)** — this cycle is a code-generation/self-review workflow, exactly the category routed to Claude/Codex now. Keep only for deliberate manual fallback.
 
 ```bash
 # 1. Generate
@@ -212,8 +253,8 @@ gemini "[long task]" --yolo -o text 2>&1 &
 
 These tools are available only through Gemini:
 
-1. **google_web_search** - Real-time internet search via Google
-2. **codebase_investigator** - Deep architectural analysis
+1. **google_web_search** - Real-time internet search via Google (the current, non-demoted use case)
+2. **codebase_investigator** - Deep architectural analysis — **demoted 2026-07-16**: do not point this at this repo's proprietary code by default; use Claude/Codex repo-aware analysis instead
 3. **save_memory** - Cross-session persistent memory
 
 ## Configuration

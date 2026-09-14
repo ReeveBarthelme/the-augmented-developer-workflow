@@ -93,7 +93,6 @@ Generates tests from a spec with Red Gate enforcement.
 **Files needed:**
 ```
 .claude/commands/tdd.md
-.claude/skills/testing-strategy/SKILL.md
 ```
 
 **Usage:** `/tdd spec.md` — generates tests that must fail first.
@@ -137,7 +136,6 @@ Automatically reviews PRs using multiple AI models.
 ```
 scripts/pr-review-bot.sh
 .github/workflows/pr-review-bot.yml
-.claude/skills/pr-bot/SKILL.md
 .claude/skills/pr-review/SKILL.md
 ```
 
@@ -158,10 +156,17 @@ scripts/pr-review-bot.sh
 .claude/hooks/pre-merge-gate.sh
 .claude/hooks/post-create-check.sh
 .claude/hooks/post-merge-cleanup.sh
-.claude/hooks/post-edit-lint.sh
 .claude/hooks/post-tool-use-tracker.sh
-.claude/hooks/session-start-status.sh
-.claude/hooks/stop-wrap-up-reminder.sh
+.claude/hooks/pr-verification-gate.sh
+.claude/hooks/push-verification-gate.sh
+.claude/hooks/pipe-mask-warn.sh
+.claude/hooks/exec-wait-loop-gate.sh
+.claude/hooks/worktree-lease.sh
+.claude/hooks/context-cost-nudge.sh
+.claude/hooks/delegation-nudge.sh
+.claude/hooks/delegation-track.sh
+.claude/hooks/agent-spawn-capture.sh
+.claude/scripts/delegation-lib.sh     (required by the four hooks above)
 scripts/cleanup-worktrees.sh          (required by post-merge-cleanup.sh)
 .claude/settings.json
 ```
@@ -172,7 +177,9 @@ scripts/cleanup-worktrees.sh          (required by post-merge-cleanup.sh)
 3. Customize file patterns in `post-tool-use-tracker.sh` for your project
 4. Ensure your project has a `make pre-merge` target (or customize `pre-merge-gate.sh`)
 5. `post-merge-cleanup.sh` auto-removes merged worktrees under `.worktrees/` after `gh pr merge`. Test it first with `scripts/cleanup-worktrees.sh --dry-run`.
-6. `post-edit-lint.sh` (PostToolUse `Edit|Write`) auto-fixes lint on save via `ruff`/`eslint` — it no-ops if neither is installed, so it's safe to leave wired. Note it rewrites the file with `--fix`; drop the flag to lint-only if you'd rather it not touch files. `session-start-status.sh` (SessionStart) prints branch + uncommitted status; both are zero-config.
+6. Read `.claude/hooks/README.md` before editing any gate. It carries the PreToolUse decision protocol, and a blocking decision nested under the wrong key exits 0, records success, and lets the tool run anyway.
+7. `exec-wait-loop-gate.sh` does nothing until you set `EXEC_WAIT_LOOP_WRAPPERS` to the command wrappers your project uses. Every other hook is zero-config.
+8. Run `bash .claude/hooks/tests/exec-wait-loop-gate.test.sh` to confirm the gate protocol works in your Claude Code version.
 
 ### Standalone Agents
 
@@ -333,7 +340,7 @@ Common customizations:
 - **Review focus** — Adjust review priorities in pr-review-bot.sh
 - **Pre-merge gates** — Ensure `make pre-merge` exists or customize pre-merge-gate.sh
 - **Migration guard** — Set `MIGRATIONS_DIR` in `.githooks/pre-commit` to enable the prefix-collision check
-- **Test conventions** — Update testing-strategy skill for your language/framework
+- **Test conventions** — Update the agent and command prompts for your language and framework
 
 ## Verification
 

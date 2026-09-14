@@ -17,6 +17,18 @@ Create accurate, well-structured PR descriptions that tell the full story of cha
 
 ## Critical Rules
 
+### 0. UNSLOP THE PROSE
+
+A PR description is a prose artifact. Run the `unslop` skill on the body before posting it.
+Highest-yield rules for PR bodies:
+
+- Rule 27: name the mechanism or the number, not a feeling. "faster queries" fails; "the product search p95 dropped 840ms to 190ms" passes.
+- Rule 29: active voice with a named actor. "the migration backfills `canonical_id`", not "`canonical_id` is backfilled".
+- Rule 20: no chatbot phrases. Delete "Found the smoking gun!" and "Let me know if...".
+- Rule 13: no em dashes.
+
+This composes with rule 1 below. Unslop changes how a claim reads, never whether it was verified.
+
 ### 1. VERIFY EVERY CLAIM
 
 **Never make factual claims without citing code:**

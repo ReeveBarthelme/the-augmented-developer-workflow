@@ -29,9 +29,11 @@ Choose reasoning effort based on task complexity and latency tolerance:
 | `low` | Simple queries, quick lookups, syntax questions | Fastest, minimal thinking tokens |
 | `medium` | Daily driver for most tasks, code review, standard edits | Balanced speed + quality (OpenAI recommended default) |
 | `high` | Complex refactors, architecture decisions, multi-file changes | Deeper analysis, more thinking tokens |
-| `xhigh` | Large migrations, security audits, intricate debugging | Maximum reasoning, non-latency-sensitive tasks only |
+| `xhigh` | Large migrations, security audits, intricate debugging | Maximum single-pass reasoning, non-latency-sensitive tasks only |
+| `max` | Hardest single problems (GPT-5.6 family) | More time reasoning on one task; heavy quota burn |
+| `ultra` | Very large parallelizable problems (GPT-5.6 family, Codex only) | Spawns parallel subagents by default; highest token/quota burn — confirm with user first |
 
-**Rule of thumb**: Start with `high`. Upgrade to `xhigh` if results need maximum depth. Use `medium` for routine tasks, `low` for quick iterations.
+**Rule of thumb**: Start with `high`. Upgrade to `xhigh` if results need maximum depth. Use `medium` for routine tasks, `low` for quick iterations. Reserve `max`/`ultra` for problems where a `high`/`xhigh` run already fell short.
 
 ### Quick Reference
 | Use case | Sandbox mode | Key flags |

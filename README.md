@@ -32,9 +32,9 @@ The full loop: **`resume-session` → `/orchestrate-investigation` → `/sdd` �
 
 ## What's Included
 
-**47 assets** across 8 categories:
+**66 assets** across 8 categories:
 
-### Skills (13) — `.claude/skills/`
+### Skills (10) — `.claude/skills/`
 
 | Skill | What It Does |
 |-------|-------------|
@@ -43,14 +43,11 @@ The full loop: **`resume-session` → `/orchestrate-investigation` → `/sdd` �
 | **orchestrate-review-deploy** | 3-model code review → auto-fix loop → commit → deploy, with quality gates at each stage |
 | **root-cause-investigation** | Systematic 4-phase root cause analysis: evidence gathering, hypothesis formation, verification, fix |
 | **pr-review** | Structured PR review methodology with severity-based findings and actionable feedback |
-| **pr-bot** | Automated PR review bot configuration for CI/CD integration |
 | **post-deploy-verification** | Post-deployment verification with $100 bet pattern — would you bet $100 it works? |
 | **critique-standards** | Severity classification standards for code review findings (Critical/Major/Minor/Suggestion) |
 | **gemini-cli** | Complete Gemini CLI reference — patterns, tools, templates for multi-model workflows |
 | **codex** | OpenAI Codex CLI reference for multi-model orchestration |
-| **modular-architecture** | Modular architecture patterns — dependency boundaries, interface contracts, module isolation |
-| **testing-strategy** | Test strategy framework — unit/integration/e2e pyramid, coverage gates, test patterns |
-| **docs-architect** | Documentation architecture — ADRs, API docs, runbooks, structured documentation |
+| **unslop** | Cuts machine-written tells from prose artifacts: PR bodies, commit messages, docs, release notes. Prose only, never code or chat. |
 
 ### Commands (4) — `.claude/commands/`
 
@@ -75,19 +72,25 @@ The full loop: **`resume-session` → `/orchestrate-investigation` → `/sdd` �
 | **tech-lead-architect** | Strategic technical leadership — system design, technology evaluation, standards, architecture reviews (opus). |
 | **test-coverage-expert** | Designs comprehensive automated tests (unit/integration/e2e) to maximize meaningful coverage. |
 
-### Hooks (7) — `.claude/hooks/`
+### Hooks (13) — `.claude/hooks/`
 
 | Hook | Trigger | What It Does |
 |------|---------|-------------|
 | **pre-merge-gate.sh** | Before `gh pr merge` | Runs `make pre-merge` and blocks the merge if it fails. Fast-path exit for non-merge commands; repo-scoped log under `.git/` (CWE-377 safe); jq-based command parsing. |
 | **post-create-check.sh** | After `gh pr create` | Runs `make pre-merge` in a detached background process and posts the result as a PR comment. Non-blocking. |
 | **post-merge-cleanup.sh** | After `gh pr merge` | Auto-removes the merged worktree via `scripts/cleanup-worktrees.sh`. Non-blocking. |
-| **post-edit-lint.sh** | After Edit/Write | Auto-runs `ruff --fix` (Python) or the nearest `eslint --fix` (JS/TS) on the edited file. No-ops if the linter isn't installed. |
 | **post-tool-use-tracker.sh** | After tool use | Tracks which files are being modified for audit |
-| **session-start-status.sh** | Session start | Prints current branch + a summary of uncommitted changes for instant orientation. |
-| **stop-wrap-up-reminder.sh** | Session stop | Reminds about `/wrap-up` when uncommitted changes exist. Blocks once, allows stop on second attempt. |
+| **pr-verification-gate.sh** | Before `gh pr create` | Asks for confirmation on any PR touching non-doc, non-test files, reciting the local verification checklist. |
+| **push-verification-gate.sh** | Before `git push` | Same checkpoint for a push straight to the default branch, which no PR gate ever sees. |
+| **pipe-mask-warn.sh** | Before Bash | Warns when a state-changing or lint/test command is piped into `tail`/`head`/`grep`. A pipe reports the LAST stage's exit code, so a blocked commit prints as success. Advisory, never blocks. |
+| **exec-wait-loop-gate.sh** | Before Bash | Denies an unbounded `until`/`while` loop whose condition runs a wrapper that swallows exit status. Off until you set `EXEC_WAIT_LOOP_WRAPPERS`. |
+| **worktree-lease.sh** | Session start, before Edit/Write | Stops a second session from clobbering uncommitted work in the same worktree. Ownership by session id, liveness by pid. |
+| **context-cost-nudge.sh** | On each prompt | Warns at most 3 times per session once resident context makes each turn materially more expensive. Silent below the first band. |
+| **delegation-nudge.sh** | Before Edit/Write | Reminds an expensive main loop to delegate file edits. Advisory until you arm enforcement with a flag file. |
+| **delegation-track.sh** | After Edit/Write | Logs one metrics event per file-touching call. Never logs edit content. |
+| **agent-spawn-capture.sh** | Before Agent/Task | Logs subagent spawns for the delegation scorecard. |
 
-### Scripts (6)
+### Scripts (13)
 
 | Script | Location | What It Does |
 |--------|----------|-------------|
@@ -97,6 +100,13 @@ The full loop: **`resume-session` → `/orchestrate-investigation` → `/sdd` �
 | **gemini-with-fallback.sh** | `.claude/scripts/` | Runs Gemini CLI with automatic seat-tiered fallback if a model/quota is unavailable |
 | **reviewer-with-fallback.sh** | `.claude/scripts/` | Multi-provider reviewer for advisory/investigation seats. Provider chain: Groq → Cerebras → Ollama → Gemini. Exit-code contract (0/64/75/78); forbids `*security*`/`design-vote` seats from degrading to the free tier. |
 | **reviewer-providers.sh** | `.claude/scripts/` | Provider-attempt library sourced by `reviewer-with-fallback.sh` (Groq/Cerebras/Ollama/Gemini), with spend logging. |
+| **delegation-lib.sh** | `.claude/scripts/` | Shared helpers for the delegation hooks: metrics paths, session model resolution, bounded JSONL appends. Sourced, never executed. |
+| **delegation-scorecard.sh** | `.claude/scripts/` | Trailing-10-session delegation report that `/wrap-up` reads. |
+| **session-cost-report.sh** | `.claude/scripts/` | Per-session token and cost breakdown from the transcript JSONL. |
+| **output-tokens-baseline.py** | `.claude/scripts/` | Baseline output-token counts to compare a session against. |
+| **memory-compact.sh** | `.claude/scripts/` | Report-only planner for trimming the auto-memory index. Flags a line whose detail exists nowhere else before you delete it. Never edits. |
+| **check-gate-liveness.sh** | `.claude/scripts/` | Reports which gates are actually armed. A disabled workflow or an unreachable hook is a gate that protects nothing. |
+| **gate-liveness-accepted.conf** | `.claude/scripts/` | Gates knowingly left dark, one reason each. |
 
 ### Security (5)
 
@@ -181,11 +191,8 @@ cp the-augmented-developer-workflow/scripts/pr-review-bot.sh your-project/script
 cp the-augmented-developer-workflow/scripts/lib-pr-review-utils.sh your-project/scripts/
 cp -r the-augmented-developer-workflow/.github/ your-project/.github/
 
-# Just the session wrap-up command + stop hook
+# Just the session wrap-up command
 cp the-augmented-developer-workflow/.claude/commands/wrap-up.md your-project/.claude/commands/
-cp the-augmented-developer-workflow/.claude/hooks/stop-wrap-up-reminder.sh your-project/.claude/hooks/
-chmod +x your-project/.claude/hooks/stop-wrap-up-reminder.sh
-# Then add the Stop hook to your .claude/settings.json (see settings.json for format)
 ```
 
 See [INSTALL.md](INSTALL.md) for detailed setup instructions.
@@ -320,7 +327,7 @@ See [docs/token-optimization.md](docs/token-optimization.md).
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Optional | orchestrate-investigation, orchestrate-review-deploy, pr-review-bot |
 | [Codex CLI](https://github.com/openai/codex) | Optional | orchestrate-investigation, orchestrate-review-deploy, pr-review-bot |
 | [gstack](https://github.com/garrytan/gstack) | Optional | Browse/QA verification step |
-| [`gh`](https://cli.github.com/) | Optional | pr-bot, hooks, pr-review-bot script, worktree cleanup |
+| [`gh`](https://cli.github.com/) | Optional | PR hooks, pr-review-bot script, worktree cleanup |
 | `jq` | Optional | pre-merge-gate hook, pr-review-bot script, reviewer plumbing |
 | `make` | Optional | pre-merge-gate hook (expects `make pre-merge` target) |
 | [gitleaks](https://github.com/gitleaks/gitleaks) | Optional | Secret-scanning layer (`.githooks/pre-commit`, `.gitleaks.toml`) |

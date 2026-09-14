@@ -36,6 +36,15 @@ Thumbs.db
 # Claude Code runtime logs (post-merge-cleanup, etc.)
 .claude/logs/
 
+# Delegation/context metrics written by the .claude hooks
+.claude/metrics/
+
+# Retained local-CI logs from post-create-check.sh
+.claude/ci-logs/
+
+# Per-worktree session lease written by .claude/hooks/worktree-lease.sh
+.session-lease
+
 # Git worktrees (created by the orchestrate-* / worktree workflow)
 .worktrees/
 

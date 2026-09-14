@@ -13,14 +13,85 @@
     ]
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree-lease.sh",
+            "args": ["acquire"],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/context-cost-nudge.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/pre-merge-gate.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pre-merge-gate.sh",
             "timeout": 900
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pr-verification-gate.sh",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/push-verification-gate.sh",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pipe-mask-warn.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/exec-wait-loop-gate.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree-lease.sh",
+            "args": ["check"],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/delegation-nudge.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/agent-spawn-capture.sh",
+            "timeout": 5
           }
         ]
       }
@@ -31,52 +102,28 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/post-create-check.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/post-create-check.sh",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": ".claude/hooks/post-merge-cleanup.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/post-merge-cleanup.sh",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": ".claude/hooks/post-tool-use-tracker.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/post-tool-use-tracker.sh",
             "timeout": 5
           }
         ]
       },
       {
-        "matcher": "Edit|Write",
+        "matcher": "Edit|Write|NotebookEdit",
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/post-edit-lint.sh",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": ".claude/hooks/session-start-status.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/delegation-track.sh",
             "timeout": 5
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": ".claude/hooks/stop-wrap-up-reminder.sh",
-            "timeout": 10
           }
         ]
       }

@@ -1,5 +1,16 @@
 # Gemini CLI Skill for Claude Code
 
+> **Demoted 2026-07-16 (this repo only):** the code-generation, code-review,
+> security-audit, test-generation, and architecture-analysis use cases
+> described below predate a routing change — Gemini is now web-search/
+> grounding ONLY for this project; reviews and code-adjacent work run on
+> Claude/Codex subscription seats instead. See `skill.md`'s "READ FIRST"
+> routing table for the current rules and `orchestrate-review-deploy`
+> SKILL.md for how PR reviews are wired. The rest of this README (and
+> `patterns.md`/`templates.md`/`tools.md`) is upstream/generic documentation
+> for the Gemini CLI skill itself and is not updated per-use-case — treat
+> `skill.md`'s routing table as authoritative when the two disagree.
+
 A Claude Code skill that enables effective use of Google's Gemini CLI as a powerful auxiliary tool.
 
 ## What This Skill Does

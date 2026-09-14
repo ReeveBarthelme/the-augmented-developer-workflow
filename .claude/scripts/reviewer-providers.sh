@@ -169,7 +169,7 @@ _rwf_try_ollama() {
 # Does NOT pass -m: the wrapper supplies its own seat-tiered -m, so an extra
 # -m here produced a duplicate flag. Instead, REVIEWER_SEAT is
 # forced to "investigation" in the child env so the wrapper's seat-tier logic
-# picks gemini-3-flash itself and logs the correct model/seat in spend.jsonl.
+# picks gemini-3.1-flash-lite itself and logs the correct model/seat in spend.jsonl.
 # GEMINI_INVESTIGATION_PRIMARY still overrides the pin (test injection).
 # Returns: 0 (success), 75 (quota), 78 (billing), other (error)
 # Sets _RWF_OUTPUT to captured output.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # reviewer-with-fallback.sh — Multi-provider reviewer for ADVISORY/investigation
-# seats. Provider chain: groq → cerebras → ollama → gemini-3-flash (via gemini wrapper).
+# seats. Provider chain: groq → cerebras → ollama → gemini-3.1-flash-lite (via gemini wrapper).
 #
 # EXIT CODE CONTRACT (matches gemini-with-fallback.sh):
 #   0  = success
@@ -21,7 +21,7 @@
 #                redundancy for the validated seat. ⚠️ Free tier ~8,192-token
 #                context cap, so it sits AFTER groq; its errors DEGRADE (no abort).
 #   3. ollama   — local qwen3-coder (skipped if `ollama` not on PATH).
-#   4. gemini   — gemini-3-flash via gemini-with-fallback.sh.
+#   4. gemini   — gemini-3.1-flash-lite via gemini-with-fallback.sh.
 #
 # Each degradation prints a DEGRADED banner. Billing failure at groq or gemini
 # exits 78 (terminal — fix billing); cerebras billing/quota degrades instead.
@@ -98,7 +98,18 @@ _rwf_extract_key() {
     key=$(grep -m1 -E "^[[:space:]]*(export[[:space:]]+)?${var_name}=" "$env_file" 2>/dev/null) || return 0
     key="${key#*=}"
     key="${key%$'\r'}"
-    key="${key%\"}"; key="${key#\"}"; key="${key%\'}"; key="${key#\'}"
+    # Quoted values: take exactly the content between the opening quote and
+    # its matching closing quote, so a trailing `# comment` after the quote
+    # is dropped rather than absorbed into the key. Unquoted values: cut at
+    # the first whitespace for the same reason (mirrors _gemini_extract_key
+    # in gemini-with-fallback.sh — m9 schema consistency).
+    if [[ "$key" == \"*\"* ]]; then
+        key="${key#\"}"; key="${key%%\"*}"
+    elif [[ "$key" == \'*\'* ]]; then
+        key="${key#\'}"; key="${key%%\'*}"
+    else
+        key="${key%%[[:space:]]*}"
+    fi
     [ -n "$key" ] && export "${var_name}=${key}"
     return 0
 }
@@ -167,10 +178,13 @@ _rwf_log_spend() {
     mkdir -p "$log_dir" 2>/dev/null || true
     chmod 700 "$log_dir" 2>/dev/null || true
 
-    # No secrets logged — same printf format as gemini-with-fallback.sh
-    printf '{"ts":"%s","model":"%s","seat":"%s","run_id":"%s","chars_in":%d,"chars_out":%d,"exit_code":%d,"provider":"%s"}\n' \
+    # No secrets logged — same printf format as gemini-with-fallback.sh.
+    # key field: non-Gemini providers log "na" (paid/ambient is a Gemini-key
+    # concept; the gemini provider's own wrapper logs its real value).
+    printf '{"ts":"%s","model":"%s","seat":"%s","run_id":"%s","chars_in":%d,"chars_out":%d,"exit_code":%d,"provider":"%s","key":"%s"}\n' \
         "$ts" "$model" "$seat" "$run_id" \
         "$chars_in" "$chars_out" "$exit_code" "$provider" \
+        "$(_rwf_sanitize_field "${_RWF_KEY_SOURCE:-na}")" \
         >> "$log_file" 2>/dev/null || true
     chmod 600 "$log_file" 2>/dev/null || true
 }
@@ -214,7 +228,6 @@ _rwf_billing_banner() {
     local provider="$1"
     cat >&2 <<BANNER
 
-================================================================================
 🚨 BILLING FAILURE — ${provider} account/billing is broken; this reviewer seat is down.
 
   This is NOT a wait-it-out error. Fix billing/account access before retrying.
@@ -223,7 +236,6 @@ _rwf_billing_banner() {
   For Groq: console.groq.com
 
   Exit code: 78 (terminal — billing/account failure)
-================================================================================
 
 BANNER
 }
@@ -279,8 +291,10 @@ main() {
         cat >&2 <<'ERRMSG'
 ERROR: This seat is forbidden on reviewer-with-fallback.sh.
 
-  Seats containing "security" and "design-vote" require pro-tier models only.
-  Use: source .claude/scripts/gemini-with-fallback.sh && gemini_with_fallback_strict "..." -o text
+  Seats containing "security" and "design-vote" require dedicated review
+  seats, not this advisory fallback chain. As of 2026-07-16:
+    security     -> Claude security subagent (see orchestrate-review-deploy SKILL.md, Agent 2)
+    design-vote  -> Codex gpt-5.6-terra, escalating to gpt-5.6-sol on a split vote
 
   Exit code: 64 (EX_USAGE)
 ERRMSG
