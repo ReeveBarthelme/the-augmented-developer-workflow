@@ -1,0 +1,23 @@
+# .actrc.example — copy to .actrc at the repo root.
+#
+# act configuration for scripts/act-local-ci.sh. Map every runner label your
+# workflows use to a Docker image; an unmapped label makes act fall back to a
+# minimal image where most actions fail in confusing ways.
+#
+# catthehacker/ubuntu:act-22.04 has native arm64 support, so Apple Silicon needs
+# no emulation. Add your own self-hosted labels here too.
+-P ubuntu-latest=catthehacker/ubuntu:act-22.04
+-P ubuntu-22.04=catthehacker/ubuntu:act-22.04
+
+# Do not re-pull the image on every run.
+--pull=false
+
+# --bind mounts the host checkout into the container instead of copying it.
+# lib-act-ci.sh depends on this: it passes HOST absolute paths (the primary .git
+# mount for linked worktrees) into the container, which only resolve under --bind.
+# Removing this line breaks the linked-worktree git mount.
+--bind
+
+# Do NOT set --artifact-server-path or --artifact-server-port here.
+# lib-act-ci.sh allocates a session-unique port per job so concurrent local runs
+# cannot collide; a fixed value here would defeat that.

@@ -1,44 +1,114 @@
-# Makefile.example — Example pre-merge target for the pre-merge-gate hook
+# Makefile.example — the real pre-merge gate for the pre-merge-gate hook.
 #
-# The pre-merge-gate.sh hook runs `make pre-merge` before allowing `gh pr merge`.
-# Copy this to your project's Makefile and customize the targets.
+# Copy to `Makefile` at your repo root, then fill in the CUSTOMIZE block below.
+# `.claude/hooks/pre-merge-gate.sh` runs `make pre-merge` before it lets a
+# `gh pr merge` through, and blocks the merge on a non-zero exit.
+#
+# Requires: scripts/act-local-ci.sh, scripts/lib-act-ci.sh, and .actrc
+# (copy .actrc.example). Install the tools with:
+#   brew install act shellcheck bats-core actionlint gitleaks jq
+#   pip install pip-audit "bandit[toml]"
 
-.PHONY: pre-merge lint test security
+# ── CUSTOMIZE ─────────────────────────────────────────────────────────────
+# Workflow jobs act should run locally. Each entry is workflow.yml:job[:Label];
+# the label is cosmetic and must not contain spaces. Look these up with
+# `grep -n '^  [a-z-]*:' .github/workflows/*.yml` — they are the job IDs, not
+# the `name:` strings. Leave empty and `make pre-merge` fails with a message.
+#
+# The workflows must be reachable by `workflow_dispatch`, or act's --detect-event
+# must find a matching trigger. A workflow with only `on: pull_request` will not run.
+ACT_JOBS ?=
+# Example:
+# ACT_JOBS ?= ci.yml:lint ci.yml:test:Unit-tests frontend.yml:build
 
-# The gate the hook calls — must pass before merge is allowed
-pre-merge: lint test security
-	@echo "All pre-merge checks passed."
+# Paths the native security scanners read. Space-separated, repo-relative.
+# A path that does not exist is skipped with a note; a missing TOOL is a failure.
+SECURITY_REQ_FILES ?= requirements.txt
+SECURITY_SRC_DIRS  ?= src
 
-# Customize: your linting commands
-lint:
-	@echo "Running linters..."
-	# Python: ruff check . && ruff format --check .
-	# TypeScript: npx eslint . && npx tsc --noEmit
-	# Go: golangci-lint run ./...
+# Directories scanned by shellcheck (*.sh) and bats (*.bats).
+SHELL_CHECK_DIRS ?= scripts .claude/hooks .githooks
+BATS_DIRS        ?= tests
 
-# Customize: your test commands
+# Your test and lint commands.
+TEST_CMD ?= @echo "CUSTOMIZE: set TEST_CMD in the Makefile"; exit 1
+LINT_CMD ?= @echo "CUSTOMIZE: set LINT_CMD in the Makefile"; exit 1
+# ── END CUSTOMIZE ─────────────────────────────────────────────────────────
+
+export SECURITY_REQ_FILES SECURITY_SRC_DIRS SHELL_CHECK_DIRS BATS_DIRS ACT_JOBS
+
+ACT := ./scripts/act-local-ci.sh
+
+.PHONY: help pre-merge test lint act-jobs act-security act-shell act-workflow-lint \
+        act-hooks agents-mirror
+
+help:
+	@echo "Targets:"
+	@echo "  make pre-merge          - full local gate (what the merge hook runs)"
+	@echo "  make test               - project tests"
+	@echo "  make lint               - project linters"
+	@echo "  make act-jobs           - run \$$(ACT_JOBS) workflow jobs via act"
+	@echo "  make act-security       - pip-audit + bandit + npm audit + gitleaks"
+	@echo "  make act-shell          - shellcheck + bats"
+	@echo "  make act-workflow-lint  - actionlint"
+	@echo "  make act-hooks          - verify core.hooksPath is live"
+	@echo "  make agents-mirror      - verify .agents/skills matches .claude/skills"
+	@echo ""
+	@echo "  REUSE=1 make act-jobs   - reuse containers (faster reruns)"
+	@echo "  SERIAL=1 make act-jobs  - force serial execution"
+	@echo "  SKIP_SECURITY=true make pre-merge  - skip the security scans"
+
 test:
-	@echo "Running tests..."
-	# Python: python3 -m pytest tests/ -v
-	# TypeScript: npm test
-	# Go: go test ./...
+	$(TEST_CMD)
 
-# Local mirror of .github/workflows/security.yml — runs the same scanners before
-# merge so you catch bad/vulnerable deps and leaked secrets locally.
-# Each tool is invoked only if installed, so this target degrades gracefully —
-# but a tool that RUNS and finds a problem must FAIL the gate. The if/then/else
-# form below is deliberate: `tool && ok || echo` would swallow a real finding
-# (the tool's non-zero exit) and let the merge through. Do not "simplify" it.
-# Customize: requirements.txt / src/ / pyproject.toml paths to match your project.
-# Escape hatch for rapid iteration: SKIP_SECURITY=true make pre-merge
-security:
-	@echo "Running security checks..."
-ifdef SKIP_SECURITY
-	@echo "Security checks SKIPPED (SKIP_SECURITY=$(SKIP_SECURITY))"
-else
-	@if command -v gitleaks  >/dev/null 2>&1; then gitleaks detect --source . --config .gitleaks.toml --no-banner; else echo "  (gitleaks not installed — skipping secret scan)"; fi
-	@if command -v pip-audit >/dev/null 2>&1; then pip-audit -r requirements.txt; else echo "  (pip-audit not installed — skipping Python CVE scan)"; fi
-	@if command -v bandit    >/dev/null 2>&1; then bandit -r src/ -ll -c pyproject.toml; else echo "  (bandit not installed — skipping Python SAST)"; fi
-	@if [ -f package.json ]; then npm audit --audit-level=high; else echo "  (no package.json — skipping npm audit)"; fi
-	@echo "Security checks complete."
+lint:
+	$(LINT_CMD)
+
+ifdef REUSE
+ACT_OPTS += --reuse
 endif
+ifdef SERIAL
+ACT_OPTS += --serial
+endif
+
+act-jobs:
+	@$(ACT) jobs $(ACT_OPTS)
+
+act-security:
+	@$(ACT) security
+
+act-shell:
+	@$(ACT) shell
+
+act-workflow-lint:
+	@$(ACT) workflow-lint
+
+act-hooks:
+	@$(ACT) hooks
+
+# .agents/skills is a byte copy of .claude/skills (Codex reads the former,
+# Claude Code the latter). Copies drift; this fails when they have.
+agents-mirror:
+	@if [ -x scripts/check-agents-skills-mirror.sh ]; then \
+		./scripts/check-agents-skills-mirror.sh; \
+	else \
+		echo "  (scripts/check-agents-skills-mirror.sh absent — skipping)"; \
+	fi
+
+# The gate the merge hook calls. Exits non-zero on the first real failure; the
+# hook shows the last 50 lines of this output to the agent that tried to merge.
+#
+# ACT_JOBS is checked at RUN time, not with $(error), so `make -n pre-merge`
+# still parses on a fresh clone.
+pre-merge:
+	@if [ -z "$(strip $(ACT_JOBS))" ]; then \
+		echo "ERROR: ACT_JOBS is empty — pre-merge would run no workflow jobs."; \
+		echo "Set ACT_JOBS in the Makefile (see the CUSTOMIZE block), e.g."; \
+		echo "  ACT_JOBS ?= ci.yml:lint ci.yml:test"; \
+		exit 1; \
+	fi
+	@if [ -x scripts/check-agents-skills-mirror.sh ]; then \
+		./scripts/check-agents-skills-mirror.sh; \
+	fi
+	# project-specific gates go here
+	@$(ACT) pre-merge $(ACT_OPTS)

@@ -1,0 +1,34 @@
+# environment.toml.example — Codex environment for this repo.
+#
+# Copy to .codex/environments/environment.toml and replace every command with
+# your project's real ones. `setup.script` runs when the environment starts;
+# each [[actions]] entry becomes a button in the Codex UI.
+#
+# Keep these pointed at the SAME targets a human would run locally. An action
+# that diverges from the documented command is worse than no action at all.
+
+version = 1
+name = "[YOUR PROJECT] contributor"
+
+[setup]
+script = "make install"
+
+[[actions]]
+name = "Run tests"
+icon = "test"
+command = "make test"
+
+[[actions]]
+name = "Pre-merge gate"
+icon = "test"
+command = "make pre-merge"
+
+[[actions]]
+name = "Start dev server"
+icon = "run"
+command = "[YOUR DEV SERVER COMMAND]"
+
+[[actions]]
+name = "Stop dev server"
+icon = "tool"
+command = "[YOUR TEARDOWN COMMAND]"

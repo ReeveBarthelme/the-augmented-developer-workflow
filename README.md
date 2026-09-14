@@ -32,9 +32,9 @@ The full loop: **`resume-session` → `/orchestrate-investigation` → `/sdd` �
 
 ## What's Included
 
-**66 assets** across 8 categories:
+**71 assets** across 8 categories:
 
-### Skills (10) — `.claude/skills/`
+### Skills (11) — `.claude/skills/`
 
 | Skill | What It Does |
 |-------|-------------|
@@ -48,6 +48,7 @@ The full loop: **`resume-session` → `/orchestrate-investigation` → `/sdd` �
 | **gemini-cli** | Complete Gemini CLI reference — patterns, tools, templates for multi-model workflows |
 | **codex** | OpenAI Codex CLI reference for multi-model orchestration |
 | **unslop** | Cuts machine-written tells from prose artifacts: PR bodies, commit messages, docs, release notes. Prose only, never code or chat. |
+| **classify-failures** | Detects fixture-masked greens — a test that newly passes only because the diff edited the test or fixture, not the production code. Runs the suite three ways and blocks when the test edit alone explains the pass. pytest-specific; see the skill for what to swap on another runner. |
 
 ### Commands (4) — `.claude/commands/`
 
@@ -90,10 +91,14 @@ The full loop: **`resume-session` → `/orchestrate-investigation` → `/sdd` �
 | **delegation-track.sh** | After Edit/Write | Logs one metrics event per file-touching call. Never logs edit content. |
 | **agent-spawn-capture.sh** | Before Agent/Task | Logs subagent spawns for the delegation scorecard. |
 
-### Scripts (13)
+### Scripts (17)
 
 | Script | Location | What It Does |
 |--------|----------|-------------|
+| **act-local-ci.sh** | `scripts/` | Entry point for local CI. Runs the workflow jobs listed in `ACT_JOBS` through act, plus the native security, shell-lint, workflow-lint and hooks-liveness checks. `pre-merge` runs them all. |
+| **lib-act-ci.sh** | `scripts/` | Library behind `act-local-ci.sh`: cross-session mutex so concurrent runs cannot OOM one Docker VM, per-session artifact-server port windows, per-job log retention with the last 30 lines on failure, and the linked-worktree primary-`.git` mount. Sourced, never executed. |
+| **check-agents-skills-mirror.sh** | `scripts/` | Fails when `.agents/skills` (what Codex reads) has drifted from `.claude/skills` (what Claude Code reads). They are copies, so they drift silently. |
+| **classify_failures/** | `scripts/` | Python module behind the `classify-failures` skill. Runs a suite on HEAD, on base with the test edits overlaid, and on pure base, then reports which greens the production change actually earned. |
 | **pr-review-bot.sh** | `scripts/` | Multi-agent PR review — sends PR to Claude, Gemini, and Codex for independent review, synthesizes findings. Includes hunk-aware diff truncation, non-code PR skipping, delta-aware re-review gating, and `@review` comment trigger. |
 | **lib-pr-review-utils.sh** | `scripts/` | Shared library for pr-review-bot.sh — diff truncation, line mapping, output parsing, review posting |
 | **cleanup-worktrees.sh** | `scripts/` | Removes `.worktrees/` worktrees whose PRs have merged (verified via GitHub API). `--dry-run` supported. Driven by the post-merge-cleanup hook. |
@@ -166,6 +171,46 @@ chmod +x your-project/.githooks/pre-commit
 # Enable the secret-scanning pre-commit hook (optional)
 git -C your-project config core.hooksPath .githooks
 ```
+
+### Codex
+
+Codex reads `AGENTS.md`, not `CLAUDE.md`, and **none of the `.claude/settings.json`
+hooks run under it**. The merge gate, the push gate and the worktree lease are all
+Claude Code hooks, so a Codex session has none of them. Git hooks and the project's
+own verification commands are the checks both tools share.
+
+```bash
+# Codex entrypoint — fill in the bracketed parts after copying
+cp the-augmented-developer-workflow/AGENTS.md.template your-project/AGENTS.md
+
+# Skills, in the location Codex reads (a byte copy of .claude/skills)
+cp -r the-augmented-developer-workflow/.agents/ your-project/.agents/
+
+# Codex environment definition
+cp -r the-augmented-developer-workflow/.codex/ your-project/.codex/
+cp your-project/.codex/environments/environment.toml.example \
+   your-project/.codex/environments/environment.toml
+```
+
+Keep `.agents/skills` and `.claude/skills` identical; they are copies, so they drift
+silently. `scripts/check-agents-skills-mirror.sh` fails when they have, and
+`make pre-merge` runs it.
+
+### Local CI and the merge gate
+
+`pre-merge-gate.sh` blocks `gh pr merge` until `make pre-merge` passes, so the gate
+is only as real as that target.
+
+```bash
+cp the-augmented-developer-workflow/Makefile.example your-project/Makefile
+cp the-augmented-developer-workflow/.actrc.example your-project/.actrc
+brew install act shellcheck bats-core actionlint gitleaks jq
+pip install pip-audit "bandit[toml]"
+```
+
+Then set `ACT_JOBS` in the Makefile to the workflow jobs you want run locally, as
+`workflow.yml:job` pairs. Leave it empty and `make pre-merge` fails with a message
+rather than passing on zero checks.
 
 ### A La Carte
 

@@ -1,0 +1,76 @@
+# AGENTS.md
+
+Copy this file to `AGENTS.md` at your repo root and fill in the bracketed parts.
+It is the Codex entrypoint. `CLAUDE.md` (see `CLAUDE.md.template`) is the Claude
+Code entrypoint and stays the fuller document.
+
+## Why the rules below are duplicated
+
+General context-engineering advice says do not repeat instructions across files.
+That advice assumes both files load into the same context. These do not. Claude
+Code loads `CLAUDE.md`, Codex loads `AGENTS.md`, and Codex cannot follow an
+`@import`. Codex CLI does support `project_doc_fallback_filenames`, which can
+name `CLAUDE.md`, but it is a *fallback* consulted only when `AGENTS.md` is
+absent. Once this file exists the fallback never fires. So for a Codex session
+this block is the only copy, not a second one. Do not "deduplicate" it. If Codex
+ever gains a real instructions-file setting, replace this section with a pointer.
+
+## Operating rules
+
+- **Never merge a pull request without asking.** Ask, get an explicit yes, then merge.
+- **Never push to `main`.** Branch, open a PR, let a human merge it.
+- **Before any edit, run `git branch --show-current && pwd`.** If you are on
+  `main`, stop and ask about a worktree. If a worktree already exists for the
+  task, work there instead.
+- **Stage files by name.** `git add path/a path/b`, never `git add -A` or
+  `git add .`, because concurrent sessions share the index.
+- **Never `git stash`.** `refs/stash` is repo-wide, not per-worktree, and a
+  mistimed pop applies another session's shelved work. Write a patch instead:
+  `git diff -- <file> > /tmp/x.patch && git apply -R /tmp/x.patch`, restore with
+  `git apply /tmp/x.patch`.
+- **Evidence before claims.** Never say works, fixed, passing, or done without
+  pasting the real output. State which applies: "verified by running X" or
+  "expected to work". A command piped into `head`/`tail`/`grep` reports the
+  pipe's exit code, not the check's. Run it bare or redirect to a file.
+- **Verify every path and symbol** with grep or a file read before referencing it.
+- **A peer's worktree is not an evidence source.** Before citing a file read or
+  test run under another worktree, prove it is idle: `git -C <wt> status --short`
+  clean and the file's mtime older than your session start. Otherwise re-derive
+  the claim from a committed ref with `git show <ref>:<path>`.
+- **Deploy means [YOUR STAGING COMMAND].** Never run [YOUR PRODUCTION COMMAND]
+  without an explicit instruction naming production.
+- [Add your project's own irreversible-action rules here: migrations, env-var
+  flags that replace rather than update, production data access.]
+
+## Skills
+
+Reusable procedures live in `.agents/skills/<name>/SKILL.md`. Read the one that
+matches your task before starting. `.agents/skills/` is a byte copy of
+`.claude/skills/`; `scripts/check-agents-skills-mirror.sh` fails when the two
+drift.
+
+## What checks you get, and what you do not
+
+`.claude/settings.json` hooks do **not** run under Codex. Every gate implemented
+as a Claude Code hook is absent from a Codex session. That covers the merge gate,
+the push gate, lint-on-edit, and the worktree lease. The checks that are shared:
+
+- **Git hooks.** Run `git config core.hooksPath .githooks` once per clone. These
+  fire for any tool that runs `git commit` or `git push`, Codex included.
+- **Project verification commands.** Run these yourself; nothing will run them
+  for you:
+
+  ```bash
+  make pre-merge        # full local gate (see Makefile.example)
+  [YOUR TEST COMMAND]
+  ```
+
+Because the hooks are missing, the "never merge without asking" and "never push
+to `main`" rules above are enforced by you alone in a Codex session. Treat them
+as hard constraints, not defaults.
+
+## Environment
+
+`.codex/environments/environment.toml.example` defines the setup script and the
+one-click actions Codex offers. Copy it to `environment.toml` and point the
+commands at your project's real targets.

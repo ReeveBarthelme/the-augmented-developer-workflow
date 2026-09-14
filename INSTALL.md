@@ -36,6 +36,58 @@ chmod +x /path/to/your-project/.githooks/pre-commit
 git -C /path/to/your-project config core.hooksPath .githooks
 ```
 
+### Codex
+
+Codex loads `AGENTS.md` and reads skills from `.agents/skills/`. It cannot see
+`CLAUDE.md`, and **`.claude/settings.json` hooks do not run under it**. The merge
+gate, the push gate and the worktree lease are Claude Code hooks, so a Codex session
+has none of them. What both tools share is the Git hooks (`core.hooksPath .githooks`)
+and the project's own verification commands, so run those yourself.
+
+```bash
+cp AGENTS.md.template /path/to/your-project/AGENTS.md   # then fill in the brackets
+cp -r .agents/ /path/to/your-project/.agents/
+cp -r .codex/  /path/to/your-project/.codex/
+cp /path/to/your-project/.codex/environments/environment.toml.example \
+   /path/to/your-project/.codex/environments/environment.toml
+```
+
+`.agents/skills/` is a byte copy of `.claude/skills/`, not a symlink, so the two
+drift. `scripts/check-agents-skills-mirror.sh` exits 1 when they have; `make
+pre-merge` runs it. Re-sync with:
+
+```bash
+rm -rf .agents/skills && mkdir -p .agents/skills && cp -R .claude/skills/. .agents/skills/
+```
+
+### Local CI (`make pre-merge`)
+
+The `pre-merge-gate.sh` hook blocks `gh pr merge` until `make pre-merge` exits 0, so
+that target is the gate. `Makefile.example` is a working one.
+
+```bash
+cp Makefile.example /path/to/your-project/Makefile
+cp .actrc.example   /path/to/your-project/.actrc
+brew install act shellcheck bats-core actionlint gitleaks jq
+pip install pip-audit "bandit[toml]"
+```
+
+Fill in the CUSTOMIZE block at the top of the Makefile. `ACT_JOBS` is the important
+one: a space-separated list of `workflow.yml:job[:Label]` entries naming the GitHub
+Actions jobs to run locally through act. The job ids come from the workflow YAML, not
+the `name:` strings. An empty `ACT_JOBS` makes `make pre-merge` fail with an
+explanation, because a gate that runs no jobs is worse than no gate.
+
+The workflows must be reachable by `workflow_dispatch` or act's `--detect-event` must
+find a matching trigger. A workflow gated only on `pull_request` will not run locally.
+
+Security scanners behave differently from linters here on purpose. A scanner that is
+**not installed** fails the gate, because a silent skip reports green on a machine
+where nothing ran. Skip the whole set deliberately with `SKIP_SECURITY=true make
+pre-merge`. A configured path that does not exist (no `requirements.txt`, no
+`package.json`) is skipped with a note, since that is a project using a subset rather
+than a broken environment.
+
 ### Merging with Existing `.claude/` Directory
 
 If your project already has a `.claude/` directory:
