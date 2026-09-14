@@ -272,11 +272,15 @@ run_act_job() {
         --artifact-server-path "$job_artifact_dir"
     )
 
+    # `9>&-` closes the CI-lock descriptor for act and everything act spawns.
+    # Without it a crashed run's orphaned act keeps the flock held, and every later
+    # run waits out ACT_MUTEX_WAIT_SECS instead of reaching reclaim_orphaned_act_ports.
+    # act never needs the lock itself; the shell that launched it holds it.
     local exit_code=0
     if [[ "$VERBOSE" == "true" ]]; then
-        "${act_cmd[@]}" || exit_code=$?
+        "${act_cmd[@]}" 9>&- || exit_code=$?
     else
-        "${act_cmd[@]}" > "$logfile" 2>&1 || exit_code=$?
+        "${act_cmd[@]}" > "$logfile" 2>&1 9>&- || exit_code=$?
     fi
 
     local elapsed=$(( $(date +%s) - start_time ))
@@ -595,8 +599,11 @@ run_parallel() {
     for gi in "${!groups[@]}"; do
         # export is required: & forks a subshell, which only inherits exported vars.
         export ACT_ARTIFACT_PORT="${ports[$gi]}"
+        # `9>&-`: the background group never needs the CI lock, and closing it here
+        # means no descendant of this fork can keep the lock alive after the parent
+        # dies. Belt and braces with the same close on the act call itself.
         # shellcheck disable=SC2086 # group is an intentionally word-split job spec list
-        "$fn" ${groups[$gi]} &
+        "$fn" ${groups[$gi]} 9>&- &
         pids+=($!)
     done
     unset ACT_ARTIFACT_PORT  # do not leak into later serial calls
@@ -964,22 +971,39 @@ acquire_act_mutex() {
     }
 
     local wait_max="${ACT_MUTEX_WAIT_SECS:-7200}" poll="${ACT_MUTEX_POLL_SECS:-15}"
-    if _act_flock_acquire "$wait_max" "$poll"; then
+    local flock_err flock_rc=0
+    flock_err=$(mktemp "${TMPDIR:-/tmp}/act-flock-err.XXXXXX")
+    _act_flock_acquire "$wait_max" "$poll" 2>"$flock_err" || flock_rc=$?
+
+    if [[ $flock_rc -eq 0 ]]; then
+        rm -f "$flock_err"
         _ACT_MUTEX_OWNED=1
         export ACT_MUTEX_HELD="$$"
         return 0
     fi
 
-    # Timed out. Name the holder when that is cheap; never make this path expensive.
-    local holder=""
-    if command -v lsof &>/dev/null; then
-        holder=$(lsof -t "$ACT_MUTEX_LOCKFILE" 2>/dev/null | tr '\n' ' ')
-    fi
-    if [[ -n "$holder" ]]; then
-        err "Timed out after ${wait_max}s waiting for the act CI lock (held by pid(s): ${holder% })"
+    # 75 is the only code that means "someone else holds it". Every other exit is a
+    # broken helper (no fcntl, a syntax error, a killed interpreter), and reporting
+    # that as a timeout sends the reader hunting for a phantom concurrent run.
+    if [[ $flock_rc -eq 75 ]]; then
+        # Name the holder when that is cheap; never make this path expensive.
+        local holder=""
+        if command -v lsof &>/dev/null; then
+            holder=$(lsof -t "$ACT_MUTEX_LOCKFILE" 2>/dev/null | tr '\n' ' ')
+        fi
+        if [[ -n "$holder" ]]; then
+            err "Timed out after ${wait_max}s waiting for the act CI lock (held by pid(s): ${holder% })"
+        else
+            err "Timed out after ${wait_max}s waiting for the act CI lock ($ACT_MUTEX_LOCKFILE)"
+        fi
     else
-        err "Timed out after ${wait_max}s waiting for the act CI lock ($ACT_MUTEX_LOCKFILE)"
+        err "Mutex acquisition failed (python exit ${flock_rc}) — the CI lock was NOT taken."
+        local detail
+        detail=$(tr '\n' ' ' < "$flock_err" 2>/dev/null)
+        [[ -n "$detail" ]] && err "python stderr: ${detail}"
     fi
+
+    rm -f "$flock_err"
     eval "exec ${ACT_MUTEX_FD}>&-" 2>/dev/null || true
     return 1
 }

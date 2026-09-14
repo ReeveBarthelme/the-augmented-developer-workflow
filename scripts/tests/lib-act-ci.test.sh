@@ -262,6 +262,77 @@ test_release_without_ownership_is_a_noop() {
     rm -f "$lf"
 }
 
+test_orphaned_act_does_not_hold_the_lock() {
+    local name="an orphaned act does not inherit the lock and block later runs"
+    local base="$SANDBOX/f7" lf bindir
+    lf=$(_lockfile_for "$base")
+    bindir="$SANDBOX/fakebin-orphan"
+    mkdir -p "$bindir"
+    # An `act` that leaves a long-lived background process behind, which is exactly
+    # what a crashed run does. If fd 9 reaches it, that orphan holds the CI lock.
+    cat > "$bindir/act" <<'FAKEACT'
+#!/usr/bin/env bash
+sleep 30 &
+echo "[x/job] 🏁  Job succeeded"
+exit 0
+FAKEACT
+    chmod +x "$bindir/act"
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$base"
+        PATH="$bindir:$PATH"
+        ACT_ARTIFACT_PORT=34567
+        VERBOSE=false
+        acquire_act_mutex >/dev/null 2>&1 || exit 1
+        run_act_job "x.yml" "job" "L" >/dev/null 2>&1
+        # Die hard, leaving the stub's background child orphaned.
+        kill -9 $BASHPID
+    ) >/dev/null 2>&1
+    sleep 0.5
+    local probe
+    probe=$(_probe_lock "$lf")
+    if [ "$probe" = "FREE" ]; then
+        pass "$name"
+    else
+        fail "$name" "orphaned act descendant still holds the CI lock (probe=$probe)"
+    fi
+    pkill -f 'sleep 30' 2>/dev/null
+    rm -f "$lf"
+}
+
+test_non_timeout_python_failure_is_reported_distinctly() {
+    local name="a non-75 python exit is reported with its code, not as a timeout"
+    local base="$SANDBOX/f8" bindir out rc
+    bindir="$SANDBOX/fakebin-py"
+    mkdir -p "$bindir"
+    cat > "$bindir/python3" <<'FAKEPY'
+#!/usr/bin/env bash
+echo "ImportError: no module named fcntl" >&2
+exit 3
+FAKEPY
+    chmod +x "$bindir/python3"
+    out=$(
+        (
+            REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+            . "$LIB"
+            ACT_MUTEX_DIR="$base"
+            PATH="$bindir:$PATH"
+            acquire_act_mutex
+        ) 2>&1
+    )
+    rc=$?
+    if [ "$rc" -ne 0 ] \
+       && printf '%s' "$out" | grep -q 'python exit 3' \
+       && printf '%s' "$out" | grep -qi 'no module named fcntl' \
+       && ! printf '%s' "$out" | grep -qi 'timed out'; then
+        pass "$name"
+    else
+        fail "$name" "expected 'python exit 3' + stderr and no timeout wording; got rc=$rc out=[$(printf '%s' "$out" | tr '\n' ' ')]"
+    fi
+    rm -f "$(_lockfile_for "$base")"
+}
+
 test_acquire_fails_closed_without_python3() {
     local name="acquire fails closed when python3 is unavailable"
     local base="$SANDBOX/f6"
@@ -501,6 +572,8 @@ test_flock_released_when_holder_is_killed
 test_flock_survives_the_python_child_that_took_it
 test_flock_release_allows_reacquire
 test_release_without_ownership_is_a_noop
+test_orphaned_act_does_not_hold_the_lock
+test_non_timeout_python_failure_is_reported_distinctly
 test_acquire_fails_closed_without_python3
 echo "--- finding 3: exit-code override ---"
 test_override_rejects_forged_marker_on_exit42
