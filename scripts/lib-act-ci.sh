@@ -284,23 +284,27 @@ run_act_job() {
     # act returns non-zero for Docker CLEANUP failures (a volume delete timing out)
     # even when the job itself succeeded. This override exists for that one case only.
     #
-    # It is restricted to exit code 1. act gives a cleanup failure no distinct code,
-    # so 1 (its generic error exit) is the only value that can plausibly be one.
-    # Every other code is a real failure that must survive: a non-act binary exiting
-    # 42, and anything above 128, which is a signal death that can land AFTER act has
-    # already printed a success line.
+    # act 0.2.84 returns exit 1 for BOTH a real job failure and a post-job Docker
+    # cleanup error, so the exit code alone cannot tell them apart. The log has to.
     #
-    # The LAST job-status line decides the outcome. A success marker anywhere else in
-    # the log can come from a step's own stdout or from an earlier job in a multi-job
-    # run. Residual: a step that prints the marker as the final status line while act
-    # itself exits 1 can still forge a pass. Closing that needs act to emit a machine
-    # readable result, which it does not.
+    # Every one of these must hold before a non-zero exit is forgiven:
+    #   * the exit code is exactly 1 (so a signal death, always > 128, never qualifies)
+    #   * at least one "🏁  Job succeeded" line is present
+    #   * NO "🏁  Job failed" line appears anywhere in the log
+    #   * NO "Job ... failed" line appears anywhere, which catches
+    #     "Error: Job required failed" — act prints that without the emoji marker
+    #
+    # Reading only the LAST status marker was wrong: a run that failed one job and
+    # then succeeded at another reported PASSED, erasing the real failure.
+    #
+    # A bare "Error: ..." line is deliberately NOT disqualifying. "Error: unable to
+    # remove container" after a clean run is the exact cleanup case this override
+    # exists for; treating every "Error:" as fatal would delete the whole feature.
     if [[ $exit_code -eq 1 && -f "$logfile" ]]; then
-        local last_status
-        # `|| true`: with no match grep exits 1, which under pipefail would abort here.
-        last_status=$(grep -E '🏁  Job (succeeded|failed)' "$logfile" | tail -1 || true)
-        if [[ "$last_status" == *'🏁  Job succeeded'* ]]; then
-            warn "${label} — act cleanup error (Docker volume timeout), but the job succeeded"
+        if grep -qF '🏁  Job succeeded' "$logfile" \
+           && ! grep -qF '🏁  Job failed' "$logfile" \
+           && ! grep -qE 'Job .* failed' "$logfile"; then
+            warn "${label} — act cleanup error after a clean run; treating as passed"
             exit_code=0
         fi
     fi
@@ -548,6 +552,12 @@ run_parallel() {
     # Allocate EVERY port up front. Allocating inside the fork loop means an
     # exhaustion on group 3 leaves groups 1 and 2 already running with no way to
     # reach them; here nothing has started yet when we give up.
+    #
+    # LIMITATION: this is not an atomic cross-session reservation. It prevents
+    # collisions WITHIN this run; across runs the only thing keeping two sessions off
+    # one window is the global act mutex, which serializes them. A caller that
+    # bypasses the mutex, or sets ACT_MUTEX_DIR to a different namespace, can still
+    # race another session for these ports.
     local ports=() p ai
     for (( ai = 0; ai < ${#groups[@]}; ai++ )); do
         if ! p=$(find_free_port "$base" "$window_end" ${used[@]+"${used[@]}"}); then
@@ -846,6 +856,7 @@ check_git_hooks_path() {
 # mkdir is the atomic primitive (macOS has no flock(1)). The holder records its pid;
 # ACT_MUTEX_HELD lets a run's own child invocations pass straight through.
 # ─────────────────────────────────────────────────────────────────────────
+ACT_MUTEX_DIR_OVERRIDDEN="${ACT_MUTEX_DIR:+1}"
 ACT_MUTEX_DIR="${ACT_MUTEX_DIR:-${TMPDIR:-/tmp}/act-ci-global.lock}"
 
 # Ownership flag, set the instant mkdir returns. The pid FILE cannot prove ownership,
@@ -854,6 +865,11 @@ ACT_MUTEX_DIR="${ACT_MUTEX_DIR:-${TMPDIR:-/tmp}/act-ci-global.lock}"
 # grace period. Deliberately NOT exported, so a forked child never releases its
 # parent's lock.
 _ACT_MUTEX_OWNED=""
+
+# Set as soon as acquire_act_mutex is entered. It is what makes the unstamped-lock
+# recovery in release_act_mutex safe: only a shell that actually tried to acquire may
+# clean up a lock dir whose ownership it cannot prove.
+_ACT_MUTEX_ATTEMPTED=""
 
 _act_mutex_reap_if_stale() {
     local holder
@@ -890,9 +906,21 @@ acquire_act_mutex() {
     # mutex before build_act_flags would otherwise have no signal trap at all.
     trap 'cleanup_secrets; release_act_mutex' EXIT
     trap 'exit 130' INT TERM HUP
+    _ACT_MUTEX_ATTEMPTED=1
+    # A caller-supplied ACT_MUTEX_DIR splits sessions into separate lock namespaces,
+    # which also splits the port reservation this mutex is what protects.
+    if [[ -n "${ACT_MUTEX_DIR_OVERRIDDEN:-}" ]]; then
+        warn "ACT_MUTEX_DIR is overridden — runs using a different lock namespace are NOT serialized,"
+        warn "so artifact-server port isolation between them is no longer guaranteed."
+    fi
     local waited=0 announced=0
     local wait_max="${ACT_MUTEX_WAIT_SECS:-7200}" poll="${ACT_MUTEX_POLL_SECS:-15}"
-    while ! mkdir "$ACT_MUTEX_DIR" 2>/dev/null; do
+    # The ownership flag is set INSIDE the same compound statement as mkdir, so the
+    # gap between taking the lock and recording that we hold it is as small as bash
+    # allows. It cannot be closed entirely, which is why release_act_mutex also
+    # reclaims an unstamped dir.
+    while true; do
+        if mkdir "$ACT_MUTEX_DIR" 2>/dev/null; then _ACT_MUTEX_OWNED=1; break; fi
         # `if` keeps the non-zero branch exempt from the caller's errexit.
         if _act_mutex_reap_if_stale; then continue; fi
         if (( announced == 0 )); then
@@ -906,9 +934,6 @@ acquire_act_mutex() {
         sleep "$poll"
         waited=$(( waited + poll ))
     done
-    # We hold the lock from here. Record that before the pid write, so a cleanup
-    # firing mid-write still knows the dir is ours to remove.
-    _ACT_MUTEX_OWNED=1
     # A failed pid stamp is an ACQUISITION FAILURE, not a warning. An unstamped lock
     # cannot be reaped by another session's liveness check until the grace period
     # expires, so returning success here would hand out a lock nobody can recover.
@@ -935,6 +960,16 @@ release_act_mutex() {
         return 0
     fi
     if [[ "$(cat "${ACT_MUTEX_DIR}/pid" 2>/dev/null)" == "$$" ]]; then
+        rm -rf "$ACT_MUTEX_DIR"
+        unset ACT_MUTEX_HELD
+        return 0
+    fi
+    # Last resort: a lock dir carrying no PID stamp, seen by a shell that WAS inside
+    # acquire_act_mutex. A genuine holder writes its PID immediately after mkdir, so
+    # an unstamped dir at our exit can only be the one we took microseconds before an
+    # interrupt arrived. _ACT_MUTEX_ATTEMPTED is what keeps this from deleting a peer
+    # session's in-flight lock: a shell that never tried to acquire never gets here.
+    if [[ -n "${_ACT_MUTEX_ATTEMPTED:-}" && -d "$ACT_MUTEX_DIR" && ! -s "${ACT_MUTEX_DIR}/pid" ]]; then
         rm -rf "$ACT_MUTEX_DIR"
         unset ACT_MUTEX_HELD
     fi

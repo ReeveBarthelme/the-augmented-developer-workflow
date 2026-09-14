@@ -5,6 +5,13 @@
 # evidence the test is inert.
 #
 # Run:  bash scripts/tests/lib-act-ci.test.sh
+#
+# Run it the way `make pre-merge` does, with a mutex already held by the parent:
+#       ACT_MUTEX_HELD=$$ bash scripts/tests/lib-act-ci.test.sh
+# That inherited variable short-circuits acquire_act_mutex, so before the harness
+# scrubbed it the two mutex tests passed without executing any acquisition at all.
+# Both invocations must be green.
+#
 # Exit: 0 when every test passes, 1 otherwise.
 #
 # Deliberately NOT `set -e`: the first failing assertion must not abort the run.
@@ -23,6 +30,23 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_ROOT="$(cd "$SELF_DIR/../.." && pwd)"
 LIB="$LIB_ROOT/scripts/lib-act-ci.sh"
 ENTRY="$LIB_ROOT/scripts/act-local-ci.sh"
+
+# Scrub every variable the library or the Makefile exports into a child process.
+# A test that inherits one of these is testing the caller's environment, not the
+# code: ACT_MUTEX_HELD in particular makes acquire_act_mutex return 0 immediately,
+# so under `make pre-merge` both mutex tests passed while executing nothing.
+# Keep this list in sync with the exports in lib-act-ci.sh, act-local-ci.sh and
+# Makefile.example.
+unset ACT_MUTEX_HELD ACT_ARTIFACT_PORT ACT_ALLOW_UNVERIFIED_PORTS \
+      ACT_MUTEX_WAIT_SECS ACT_MUTEX_POLL_SECS ACT_PORT_WINDOW ACT_JOBS ACT_FLAGS \
+      VERBOSE REUSE PARALLEL FORCE_AMD64 SKIP_SECURITY \
+      SECURITY_REQ_FILES SECURITY_SRC_DIRS SHELL_CHECK_DIRS BATS_DIRS
+
+# Assert the scrub worked before running anything that depends on it.
+if [ -n "${ACT_MUTEX_HELD:-}" ]; then
+    echo "FATAL: ACT_MUTEX_HELD is still set after the scrub; mutex tests would be inert." >&2
+    exit 1
+fi
 
 # Every test runs against throwaway dirs, never the real mutex or the real repo
 # config. Without this the ACT_JOBS tests would block on a peer session's lock.
@@ -183,6 +207,118 @@ test_override_accepts_genuine_cleanup_error() {
     check "$name" "$got" "0"
 }
 
+test_override_rejects_failure_before_success() {
+    local name="an earlier real job failure is NOT erased by a later success marker"
+    local got
+    got=$(_run_act_job_with_fake '[x/a] 🏁  Job failed
+[x/b] 🏁  Job succeeded
+Error: Job required failed' 1 e)
+    check "$name" "$got" "1"
+}
+
+test_override_forgives_trailing_cleanup_error() {
+    local name="positive control: success markers + a trailing cleanup Error: is forgiven"
+    local got
+    got=$(_run_act_job_with_fake '[x/a] 🏁  Job succeeded
+[x/b] 🏁  Job succeeded
+Error: unable to remove container' 1 f)
+    check "$name" "$got" "0"
+}
+
+test_override_rejects_job_required_failed_phrase() {
+    local name="a 'Job ... failed' line with no emoji marker still blocks the override"
+    local got
+    got=$(_run_act_job_with_fake '[x/a] 🏁  Job succeeded
+Error: Job required failed' 1 g)
+    check "$name" "$got" "1"
+}
+
+# ── Harness integrity: the mutex tests must not be inert ──────────────────
+
+test_harness_scrubs_act_mutex_held() {
+    local name="harness runs green with ACT_MUTEX_HELD inherited (tests are not bypassed)"
+    # Re-run THIS file with the variable the parent pre-merge run exports. Guard
+    # against infinite recursion with a marker variable.
+    if [ -n "${_LIB_ACT_CI_TEST_NESTED:-}" ]; then
+        pass "$name (nested run, skipped)"
+        return 0
+    fi
+    local rc
+    _LIB_ACT_CI_TEST_NESTED=1 ACT_MUTEX_HELD=$$ \
+        bash "${BASH_SOURCE[0]}" > "$SANDBOX/nested.log" 2>&1
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        pass "$name"
+    else
+        fail "$name" "nested run failed: $(grep -c FAIL "$SANDBOX/nested.log") failure(s); see $SANDBOX/nested.log"
+    fi
+}
+
+# ── Finding C: signal between mkdir and the ownership flag ────────────────
+
+test_mutex_no_leak_on_signal_right_after_mkdir() {
+    local name="an interrupt between mkdir and the ownership flag leaves no lock dir"
+    local lock="$SANDBOX/m3.lock"
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$lock"
+        # Reproduce the window deterministically. `trap 'exit 130' TERM` is what the
+        # library installs, so running `exit 130` the instant the real mkdir returns
+        # IS the signal path, without depending on when bash chooses to deliver a
+        # signal (it defers delivery until the enclosing `while` compound finishes,
+        # which is why sending a real SIGTERM here cannot hit the window at all).
+        mkdir() {
+            command mkdir "$@" || return $?
+            exit 130
+        }
+        acquire_act_mutex
+    ) >/dev/null 2>&1
+    if [ ! -d "$lock" ]; then
+        pass "$name"
+    else
+        fail "$name" "lock dir survived the interrupt: $lock"
+        rm -rf "$lock"
+    fi
+}
+
+test_release_removes_unstamped_lock_after_attempt() {
+    local name="release_act_mutex reclaims an unstamped lock dir our own acquire left"
+    local lock="$SANDBOX/m4.lock"
+    command mkdir -p "$lock"          # a lock dir with NO pid file, as mid-acquire
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$lock"
+        _ACT_MUTEX_ATTEMPTED=1        # this shell was inside acquire_act_mutex
+        release_act_mutex
+    ) >/dev/null 2>&1
+    if [ ! -d "$lock" ]; then
+        pass "$name"
+    else
+        fail "$name" "unstamped lock dir survived release: $lock"
+        rm -rf "$lock"
+    fi
+}
+
+test_release_leaves_unstamped_lock_we_never_attempted() {
+    local name="control: release does NOT touch an unstamped lock when we never tried to acquire"
+    local lock="$SANDBOX/m5.lock"
+    command mkdir -p "$lock"
+    (
+        REPO_ROOT="$LIB_ROOT"; export REPO_ROOT
+        . "$LIB"
+        ACT_MUTEX_DIR="$lock"
+        release_act_mutex             # _ACT_MUTEX_ATTEMPTED deliberately unset
+    ) >/dev/null 2>&1
+    if [ -d "$lock" ]; then
+        pass "$name"
+        rm -rf "$lock"
+    else
+        fail "$name" "release deleted a peer session's in-flight lock dir"
+    fi
+}
+
 # ── Finding 4: ACT_JOBS parsing ───────────────────────────────────────────
 
 _parse() {
@@ -279,11 +415,19 @@ test_run_parallel_refuses_more_groups_than_window
 echo "--- finding 2: mutex ---"
 test_mutex_trap_installed_before_mkdir
 test_mutex_failed_pid_write_is_acquisition_failure
+test_mutex_no_leak_on_signal_right_after_mkdir
+test_release_removes_unstamped_lock_after_attempt
+test_release_leaves_unstamped_lock_we_never_attempted
 echo "--- finding 3: exit-code override ---"
 test_override_rejects_forged_marker_on_exit42
 test_override_rejects_signal_exit
 test_override_rejects_marker_followed_by_failure
 test_override_accepts_genuine_cleanup_error
+test_override_rejects_failure_before_success
+test_override_forgives_trailing_cleanup_error
+test_override_rejects_job_required_failed_phrase
+echo "--- harness integrity ---"
+test_harness_scrubs_act_mutex_held
 echo "--- finding 4: ACT_JOBS parsing ---"
 test_parse_rejects_colon_prefixed_token
 test_parse_rejects_bare_token
